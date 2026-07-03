@@ -25,5 +25,6 @@ data class PageEntity(
     val imageUri: String,
     val ocrText: String? = null,
     val filterTypeOrdinal: Int = 0,
+    val fileSizeBytes: Long = 0,
     val createdAt: Long = System.currentTimeMillis(),
 )

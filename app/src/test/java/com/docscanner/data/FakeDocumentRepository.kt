@@ -48,6 +48,7 @@ class FakeDocumentRepository : DocumentRepository {
         documentId: Long,
         imageUri: String,
         filterTypeOrdinal: Int,
+        fileSizeBytes: Long,
     ): Long {
         val id = nextPageId++
         val now = System.currentTimeMillis()

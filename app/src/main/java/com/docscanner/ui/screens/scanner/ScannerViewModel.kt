@@ -201,7 +201,7 @@ class ScannerViewModel @Inject constructor(
                         }
                     }
                     val imageUri = Uri.fromFile(pageFile).toString()
-                    val pageId = repository.addPage(documentId, imageUri)
+                    val pageId = repository.addPage(documentId, imageUri, fileSizeBytes = pageFile.length())
 
                     val filteredBitmap = filterPipeline.apply(captured.filterTypes, bitmap)
                     val ocrResult = ocrEngine.recognize(filteredBitmap)

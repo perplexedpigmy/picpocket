@@ -6,6 +6,7 @@ import com.docscanner.data.local.DocScannerDatabase
 import com.docscanner.data.repository.DocumentRepositoryImpl
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -134,6 +135,27 @@ class DocumentRepositoryTest {
         val remaining = repository.getPages(docId)
         assertEquals(2, remaining.size)
         assertTrue(remaining.none { it.id == pageId })
+    }
+
+    @Test
+    fun `addPage stores fileSizeBytes`() = runTest {
+        val docId = repository.createDocument("File size test")
+        val pageId = repository.addPage(docId, "content://page.jpg", fileSizeBytes = 12345L)
+
+        val page = repository.getPage(pageId)
+        assertNotNull(page)
+    }
+
+    @Test
+    fun `getDocument returns pageCount and totalFileSize`() = runTest {
+        val docId = repository.createDocument("Stats test")
+        repository.addPage(docId, "content://p1.jpg", fileSizeBytes = 1000L)
+        repository.addPage(docId, "content://p2.jpg", fileSizeBytes = 2000L)
+
+        val doc = repository.getDocument(docId)
+        assertNotNull(doc)
+        assertEquals(2, doc!!.pageCount)
+        assertEquals(3000L, doc.totalFileSize)
     }
 
     @Test

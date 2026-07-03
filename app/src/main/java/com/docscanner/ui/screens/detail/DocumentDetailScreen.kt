@@ -1,8 +1,10 @@
 package com.docscanner.ui.screens.detail
 
 import android.net.Uri
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,11 +19,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -48,12 +53,15 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Page
 import java.io.File
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun DocumentDetailScreen(
     documentId: Long,
     onNavigateBack: () -> Unit,
+    onPageView: (Long, Int) -> Unit = { _, _ -> },
     viewModel: DocumentDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -81,7 +89,10 @@ fun DocumentDetailScreen(
                         )
                     }
                     IconButton(onClick = { viewModel.showRenameDialog() }) {
-                        Icon(Icons.Default.Edit, contentDescription = "Rename")
+                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename")
+                    }
+                    IconButton(onClick = { viewModel.showDeleteConfirmation() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete document")
                     }
                 },
             )
@@ -123,17 +134,32 @@ fun DocumentDetailScreen(
                 Text("Pages", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
 
+                val lazyListState = rememberLazyListState()
+                val reorderableState = rememberReorderableLazyListState(
+                    lazyListState = lazyListState,
+                    onMove = { from, to ->
+                        viewModel.reorderLocally(from.index, to.index)
+                    },
+                )
+
                 LazyRow(
+                    state = lazyListState,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(4.dp),
                 ) {
-                    itemsIndexed(state.pages) { index, page ->
-                        PageThumbnail(
-                            page = page,
-                            pageNumber = index + 1,
-                            isEditMode = state.isEditMode,
-                            onDelete = { viewModel.deletePage(page.id) },
-                        )
+                    items(state.reorderablePages, key = { it.id }) { page ->
+                        ReorderableItem(reorderableState, key = page.id) { _ ->
+                            val index = state.reorderablePages.indexOf(page)
+                            val itemModifier = if (state.isEditMode) Modifier.draggableHandle() else Modifier
+                            PageThumbnail(
+                                page = page,
+                                pageNumber = index + 1,
+                                isEditMode = state.isEditMode,
+                                onDelete = { viewModel.deletePage(page.id) },
+                                onView = { onPageView(documentId, index) },
+                                modifier = itemModifier,
+                            )
+                        }
                     }
                 }
             }
@@ -165,17 +191,43 @@ fun DocumentDetailScreen(
             },
         )
     }
+
+    if (state.showDeleteConfirmation) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDeleteConfirmation() },
+            title = { Text("Delete document?") },
+            text = {
+                Text("This document and all its pages will be permanently deleted.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteDocument()
+                    onNavigateBack()
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissDeleteConfirmation() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PageThumbnail(
     page: Page,
     pageNumber: Int,
     isEditMode: Boolean = false,
     onDelete: () -> Unit = {},
+    onView: () -> Unit = {},
+    modifier: Modifier = Modifier,
 ) {
     Card(
-        modifier = Modifier
+        modifier = modifier
             .width(160.dp)
             .aspectRatio(0.7f),
     ) {
@@ -192,7 +244,15 @@ private fun PageThumbnail(
                 Image(
                     bitmap = bitmap.asImageBitmap(),
                     contentDescription = "Page $pageNumber",
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (!isEditMode) Modifier.combinedClickable(
+                                onClick = {},
+                                onLongClick = null,
+                                onDoubleClick = onView,
+                            ) else Modifier
+                        ),
                     contentScale = ContentScale.Fit,
                 )
             } else {
@@ -214,6 +274,15 @@ private fun PageThumbnail(
                 style = MaterialTheme.typography.labelSmall,
             )
             if (isEditMode) {
+                Icon(
+                    Icons.Default.DragHandle,
+                    contentDescription = "Long press to reorder",
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(4.dp)
+                        .size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier
@@ -225,7 +294,7 @@ private fun PageThumbnail(
                         ),
                 ) {
                     Icon(
-                        Icons.Default.Close,
+                        Icons.Default.Delete,
                         contentDescription = "Delete page",
                         tint = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.size(18.dp),

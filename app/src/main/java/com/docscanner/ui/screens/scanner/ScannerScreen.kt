@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.domain.filter.FilterType
+import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -102,8 +103,11 @@ fun ScannerScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
-            val docUri = Uri.parse(uri.toString() + "/" + state.documentName.replace(" ", "_") + ".pdf")
-            viewModel.saveDocument(docUri)
+            val pickedDir = DocumentFile.fromTreeUri(context, uri)
+            val docFile = pickedDir?.createFile("application/pdf", state.documentName.replace(" ", "_"))
+            if (docFile != null) {
+                viewModel.saveDocument(docFile.uri)
+            }
         }
     }
 

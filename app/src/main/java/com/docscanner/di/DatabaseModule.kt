@@ -23,7 +23,7 @@ object DatabaseModule {
             context,
             DocScannerDatabase::class.java,
             "docscanner.db",
-        ).build()
+        ).fallbackToDestructiveMigration().build()
     }
 
     @Provides

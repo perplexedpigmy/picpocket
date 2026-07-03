@@ -12,7 +12,7 @@ interface DocumentRepository {
     suspend fun getPages(documentId: Long): List<Page>
     suspend fun getPage(pageId: Long): Page?
     suspend fun createDocument(name: String): Long
-    suspend fun addPage(documentId: Long, imageUri: String, filterTypeOrdinal: Int = 0): Long
+    suspend fun addPage(documentId: Long, imageUri: String, filterTypeOrdinal: Int = 0, fileSizeBytes: Long = 0): Long
     suspend fun updatePageOcrText(pageId: Long, ocrText: String)
     suspend fun updateDocumentName(documentId: Long, name: String)
     suspend fun updateDocumentOutputUri(documentId: Long, uri: String)

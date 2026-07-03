@@ -7,4 +7,5 @@ data class Document(
     val createdAt: Long,
     val updatedAt: Long,
     val pageCount: Int = 0,
+    val totalFileSize: Long = 0,
 )

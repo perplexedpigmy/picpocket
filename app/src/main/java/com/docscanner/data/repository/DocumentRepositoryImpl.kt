@@ -1,6 +1,7 @@
 package com.docscanner.data.repository
 
 import com.docscanner.data.local.dao.DocumentDao
+import com.docscanner.data.local.dao.DocumentStats
 import com.docscanner.data.local.dao.PageDao
 import com.docscanner.data.local.entity.DocumentEntity
 import com.docscanner.data.local.entity.PageEntity
@@ -18,13 +19,13 @@ class DocumentRepositoryImpl @Inject constructor(
 ) : DocumentRepository {
 
     override fun observeDocuments(): Flow<List<Document>> {
-        return documentDao.observeAll().map { entities ->
-            entities.map { it.toDomain() }
+        return documentDao.observeAllWithStats().map { stats ->
+            stats.map { it.toDomain() }
         }
     }
 
     override fun observeDocument(documentId: Long): Flow<Document?> {
-        return documentDao.observeById(documentId).map { it?.toDomain() }
+        return documentDao.observeByIdWithStats(documentId).map { it?.toDomain() }
     }
 
     override fun observePages(documentId: Long): Flow<List<Page>> {
@@ -34,7 +35,7 @@ class DocumentRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getDocument(documentId: Long): Document? {
-        return documentDao.getById(documentId)?.toDomain()
+        return documentDao.getByIdWithStats(documentId)?.toDomain()
     }
 
     override suspend fun getPages(documentId: Long): List<Page> {
@@ -56,6 +57,7 @@ class DocumentRepositoryImpl @Inject constructor(
         documentId: Long,
         imageUri: String,
         filterTypeOrdinal: Int,
+        fileSizeBytes: Long,
     ): Long {
         val maxPage = pageDao.maxPageNumber(documentId) ?: 0
         return pageDao.insert(
@@ -64,6 +66,7 @@ class DocumentRepositoryImpl @Inject constructor(
                 pageNumber = maxPage + 1,
                 imageUri = imageUri,
                 filterTypeOrdinal = filterTypeOrdinal,
+                fileSizeBytes = fileSizeBytes,
             )
         )
     }
@@ -111,6 +114,18 @@ class DocumentRepositoryImpl @Inject constructor(
             outputUri = outputUri,
             createdAt = createdAt,
             updatedAt = updatedAt,
+        )
+    }
+
+    private fun DocumentStats.toDomain(): Document {
+        return Document(
+            id = id,
+            name = name,
+            outputUri = outputUri,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            pageCount = pageCount,
+            totalFileSize = totalFileSize,
         )
     }
 

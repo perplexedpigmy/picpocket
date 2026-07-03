@@ -2,6 +2,7 @@ package com.docscanner.ui
 
 import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.ui.screens.home.HomeViewModel
+import com.docscanner.ui.screens.home.SortOrder
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -122,5 +123,63 @@ class HomeViewModelTest {
         viewModel.onDocumentLongPress(1L)
         val shouldNotNavigate = viewModel.onDocumentTap(1L)
         assertFalse("With selection mode, tap should not navigate", shouldNotNavigate)
+    }
+
+    @Test
+    fun `setSortOrder updates sortOrder in state`() = runTest {
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        viewModel.setSortOrder(SortOrder.NAME_ASC)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(SortOrder.NAME_ASC, viewModel.uiState.value.sortOrder)
+    }
+
+    @Test
+    fun `sort by NAME_ASC orders documents alphabetically`() = runTest {
+        repo.createDocument("Zebra")
+        repo.createDocument("Alpha")
+        repo.createDocument("Bravo")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.setSortOrder(SortOrder.NAME_ASC)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val names = viewModel.uiState.value.documents.map { it.name }
+        assertEquals(listOf("Alpha", "Bravo", "Zebra"), names)
+    }
+
+    @Test
+    fun `showRenameDialog sets renameText from selected document`() = runTest {
+        val id = repo.createDocument("Rename Me")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.onDocumentLongPress(id)
+        viewModel.showRenameDialog()
+
+        assertEquals("Rename Me", viewModel.uiState.value.renameText)
+        assertTrue(viewModel.uiState.value.showRenameDialog)
+    }
+
+    @Test
+    fun `renameSelected updates document name`() = runTest {
+        val id = repo.createDocument("Old Name")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.onDocumentLongPress(id)
+        viewModel.showRenameDialog()
+        viewModel.updateRenameText("New Name")
+        viewModel.renameSelected()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("New Name", repo.getDocument(id)?.name)
+        assertFalse(viewModel.uiState.value.showRenameDialog)
+    }
+
+    @Test
+    fun `hideRenameDialog clears dialog state`() {
+        viewModel.showRenameDialog()
+        assertTrue(viewModel.uiState.value.showRenameDialog)
+
+        viewModel.hideRenameDialog()
+        assertFalse(viewModel.uiState.value.showRenameDialog)
     }
 }

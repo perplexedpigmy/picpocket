@@ -8,14 +8,17 @@ import com.docscanner.ui.screens.detail.DocumentDetailScreen
 import com.docscanner.ui.screens.home.HomeScreen
 import com.docscanner.ui.screens.scanner.ScannerScreen
 import com.docscanner.ui.screens.settings.SettingsScreen
+import com.docscanner.ui.screens.viewer.PageViewerScreen
 
 object Routes {
     const val HOME = "home"
     const val SCANNER = "scanner"
     const val DOCUMENT_DETAIL = "document/{documentId}"
+    const val PAGE_VIEWER = "viewer/{documentId}/{pageIndex}"
     const val SETTINGS = "settings"
 
     fun documentDetail(documentId: Long) = "document/$documentId"
+    fun pageViewer(documentId: Long, pageIndex: Int) = "viewer/$documentId/$pageIndex"
 }
 
 @Composable
@@ -42,6 +45,20 @@ fun DocScannerNavGraph(navController: NavHostController) {
             if (documentId != null) {
                 DocumentDetailScreen(
                     documentId = documentId,
+                    onNavigateBack = { navController.popBackStack() },
+                    onPageView = { docId, pageIndex ->
+                        navController.navigate(Routes.pageViewer(docId, pageIndex))
+                    },
+                )
+            }
+        }
+        composable(Routes.PAGE_VIEWER) { backStackEntry ->
+            val documentId = backStackEntry.arguments?.getString("documentId")?.toLongOrNull()
+            val pageIndex = backStackEntry.arguments?.getString("pageIndex")?.toIntOrNull() ?: 0
+            if (documentId != null) {
+                PageViewerScreen(
+                    documentId = documentId,
+                    initialPageIndex = pageIndex,
                     onNavigateBack = { navController.popBackStack() },
                 )
             }

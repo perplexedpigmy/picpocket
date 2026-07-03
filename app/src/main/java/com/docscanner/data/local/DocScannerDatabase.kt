@@ -9,7 +9,7 @@ import com.docscanner.data.local.entity.PageEntity
 
 @Database(
     entities = [DocumentEntity::class, PageEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class DocScannerDatabase : RoomDatabase() {

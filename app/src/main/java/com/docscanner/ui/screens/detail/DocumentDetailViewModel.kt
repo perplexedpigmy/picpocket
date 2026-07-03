@@ -16,10 +16,12 @@ import javax.inject.Inject
 data class DetailUiState(
     val document: Document? = null,
     val pages: List<Page> = emptyList(),
+    val reorderablePages: List<Page> = emptyList(),
     val isLoading: Boolean = true,
     val showRenameDialog: Boolean = false,
     val renameText: String = "",
     val isEditMode: Boolean = false,
+    val showDeleteConfirmation: Boolean = false,
 )
 
 @HiltViewModel
@@ -38,7 +40,12 @@ class DocumentDetailViewModel @Inject constructor(
         }
         viewModelScope.launch {
             repository.observePages(documentId).collect { pages ->
-                _uiState.update { it.copy(pages = pages, isLoading = false) }
+                val current = _uiState.value
+                if (!current.isEditMode || current.reorderablePages.isEmpty()) {
+                    _uiState.update { it.copy(pages = pages, reorderablePages = pages, isLoading = false) }
+                } else {
+                    _uiState.update { it.copy(pages = pages, isLoading = false) }
+                }
             }
         }
     }
@@ -71,12 +78,65 @@ class DocumentDetailViewModel @Inject constructor(
     }
 
     fun toggleEditMode() {
+        val state = _uiState.value
+        if (state.isEditMode) {
+            val docId = state.document?.id ?: return
+            viewModelScope.launch {
+                repository.reorderPages(docId, state.reorderablePages.map { it.id })
+            }
+        }
         _uiState.update { it.copy(isEditMode = !it.isEditMode) }
+    }
+
+    fun reorderLocally(fromIndex: Int, toIndex: Int) {
+        val pages = _uiState.value.reorderablePages.toMutableList()
+        if (fromIndex < 0 || fromIndex >= pages.size) return
+        if (toIndex < 0 || toIndex >= pages.size) return
+        val item = pages.removeAt(fromIndex)
+        pages.add(toIndex, item)
+        _uiState.update { it.copy(reorderablePages = pages) }
     }
 
     fun deletePage(pageId: Long) {
         viewModelScope.launch {
             repository.deletePage(pageId)
+        }
+        _uiState.update {
+            it.copy(reorderablePages = it.reorderablePages.filter { p -> p.id != pageId })
+        }
+    }
+
+    fun showDeleteConfirmation() {
+        _uiState.update { it.copy(showDeleteConfirmation = true) }
+    }
+
+    fun dismissDeleteConfirmation() {
+        _uiState.update { it.copy(showDeleteConfirmation = false) }
+    }
+
+    fun deleteDocument() {
+        val docId = _uiState.value.document?.id ?: return
+        viewModelScope.launch {
+            repository.deleteDocument(docId)
+        }
+    }
+
+    fun movePage(pageId: Long, newIndex: Int) {
+        val docId = _uiState.value.document?.id ?: return
+        val pages = _uiState.value.pages.toMutableList()
+        val currentIndex = pages.indexOfFirst { it.id == pageId }
+        if (currentIndex < 0) return
+        val page = pages.removeAt(currentIndex)
+        pages.add(newIndex, page)
+        viewModelScope.launch {
+            repository.reorderPages(docId, pages.map { it.id })
+        }
+    }
+
+    fun reorderPages(pageIds: List<Long>) {
+        val docId = _uiState.value.document?.id ?: return
+        viewModelScope.launch {
+            repository.reorderPages(docId, pageIds)
         }
     }
 }

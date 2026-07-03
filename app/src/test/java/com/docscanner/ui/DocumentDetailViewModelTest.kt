@@ -7,6 +7,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -69,11 +71,14 @@ class DocumentDetailViewModelTest {
     }
 
     @Test
-    fun `toggle edit mode`() {
+    fun `toggle edit mode`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
         assertFalse(viewModel.uiState.value.isEditMode)
         viewModel.toggleEditMode()
         assertTrue(viewModel.uiState.value.isEditMode)
         viewModel.toggleEditMode()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
         assertFalse(viewModel.uiState.value.isEditMode)
     }
 
@@ -89,5 +94,26 @@ class DocumentDetailViewModelTest {
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(1, viewModel.uiState.value.pages.size)
+    }
+
+    @Test
+    fun `showDeleteConfirmation toggles dialog`() {
+        assertFalse(viewModel.uiState.value.showDeleteConfirmation)
+        viewModel.showDeleteConfirmation()
+        assertTrue(viewModel.uiState.value.showDeleteConfirmation)
+        viewModel.dismissDeleteConfirmation()
+        assertFalse(viewModel.uiState.value.showDeleteConfirmation)
+    }
+
+    @Test
+    fun `deleteDocument removes document from state`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertNotNull(viewModel.uiState.value.document)
+
+        viewModel.deleteDocument()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.document)
     }
 }
