@@ -1,3 +1,7 @@
+<div align="center">
+  <img src=".github/images/icon.svg" width="96" height="96" alt="DocScanner icon">
+</div>
+
 # DocScanner
 
 [![Android](https://img.shields.io/badge/Android-26%2B-3DDC84?logo=android)](https://developer.android.com/about/versions/oreo)
