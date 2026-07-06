@@ -9,6 +9,7 @@ captures
 .cxx
 local.properties
 tmp/
+docs/
 *.apk
 *.aab
 *.hprof
