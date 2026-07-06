@@ -143,6 +143,7 @@ fun SettingsScreen(
                                 Spacer(Modifier.width(4.dp))
                                 Text(
                                     when (palette) {
+                                        Palette.ROYAL -> "Royal"
                                         Palette.DEFAULT -> "Blue"
                                         Palette.OCEAN -> "Teal"
                                         Palette.FOREST -> "Green"

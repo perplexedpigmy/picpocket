@@ -39,12 +39,15 @@ class SettingsViewModel @Inject constructor(
     init {
         val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
         val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
+        val config = themeManager.config.value
         _uiState.update {
             it.copy(
                 searchablePdf = prefs.getBoolean("searchable_pdf", true),
                 defaultSaveUri = prefs.getString("default_save_uri", null),
                 defaultSaveLabel = prefs.getString("default_save_label", "Not set") ?: "Not set",
                 pageSize = pageSize,
+                darkMode = config.darkMode,
+                palette = config.palette,
             )
         }
     }

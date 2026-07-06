@@ -89,8 +89,8 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `default palette is DEFAULT`() {
-        assertEquals(Palette.DEFAULT, viewModel.uiState.value.palette)
+    fun `default palette is ROYAL`() {
+        assertEquals(Palette.ROYAL, viewModel.uiState.value.palette)
     }
 
     @Test
@@ -103,6 +103,12 @@ class SettingsViewModelTest {
     fun `set palette to FOREST`() {
         viewModel.setPalette(Palette.FOREST)
         assertEquals(Palette.FOREST, viewModel.uiState.value.palette)
+    }
+
+    @Test
+    fun `set palette to ROYAL`() {
+        viewModel.setPalette(Palette.ROYAL)
+        assertEquals(Palette.ROYAL, viewModel.uiState.value.palette)
     }
 
     @Test

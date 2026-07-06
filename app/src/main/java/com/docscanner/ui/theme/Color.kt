@@ -106,3 +106,38 @@ val ForestDark = darkColorScheme(
     onSurface = Color(0xFFE0E3DF),
     onError = Color.Black,
 )
+
+// ── Royal (Cerulean Blue) ──
+
+val Blue600 = Color(0xFF1E88E5)
+val Blue300 = Color(0xFF64B5F6)
+val Amber500 = Color(0xFFFFB300)
+val Amber200 = Color(0xFFFFE082)
+
+val RoyalLight = lightColorScheme(
+    primary = Blue600,
+    secondary = Amber500,
+    tertiary = Color(0xFF00ACC1),
+    background = Color(0xFFF5F5F5),
+    surface = Color.White,
+    error = Color(0xFFD32F2F),
+    onPrimary = Color.White,
+    onSecondary = Color.Black,
+    onBackground = Color(0xFF212121),
+    onSurface = Color(0xFF212121),
+    onError = Color.White,
+)
+
+val RoyalDark = darkColorScheme(
+    primary = Blue300,
+    secondary = Amber200,
+    tertiary = Color(0xFF80DEEA),
+    background = Color(0xFF121212),
+    surface = Color(0xFF1E1E1E),
+    error = Color(0xFFCF6679),
+    onPrimary = Color(0xFF003258),
+    onSecondary = Color.Black,
+    onBackground = Color(0xFFE0E0E0),
+    onSurface = Color(0xFFE0E0E0),
+    onError = Color.Black,
+)

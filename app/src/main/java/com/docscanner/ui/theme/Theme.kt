@@ -18,6 +18,7 @@ private val LightColorScheme = DefaultLight
 private val DarkColorScheme = DefaultDark
 
 private fun pickPalette(palette: Palette, isDark: Boolean) = when (palette) {
+    Palette.ROYAL   -> if (isDark) RoyalDark else RoyalLight
     Palette.DEFAULT -> if (isDark) DefaultDark else DefaultLight
     Palette.OCEAN   -> if (isDark) OceanDark else OceanLight
     Palette.FOREST  -> if (isDark) ForestDark else ForestLight
