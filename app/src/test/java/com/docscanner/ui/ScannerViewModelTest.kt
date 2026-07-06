@@ -12,6 +12,7 @@ import com.docscanner.domain.filter.GrayscaleFilter
 import com.docscanner.domain.filter.SharpenFilter
 import com.docscanner.domain.ocr.FakeOcrEngine
 import com.docscanner.domain.pdf.FakePdfGenerator
+import com.docscanner.domain.pdf.PageSize
 import com.docscanner.domain.scanner.ScannerResult
 import com.docscanner.ui.screens.scanner.ScannerViewModel
 import com.docscanner.util.MainCoroutineRule
@@ -186,5 +187,23 @@ class ScannerViewModelTest {
 
         viewModel.hideFilterSheet()
         assertFalse(viewModel.uiState.value.showFilterSheet)
+    }
+
+    @Test
+    fun `default page size is A4`() {
+        assertEquals(PageSize.A4, viewModel.uiState.value.pageSize)
+    }
+
+    @Test
+    fun `set page size updates state`() {
+        viewModel.setPageSize(PageSize.LETTER)
+        assertEquals(PageSize.LETTER, viewModel.uiState.value.pageSize)
+    }
+
+    @Test
+    fun `set page size persists in prefs`() {
+        viewModel.setPageSize(PageSize.LEGAL)
+        viewModel.setPageSize(PageSize.A5)
+        assertEquals(PageSize.A5, viewModel.uiState.value.pageSize)
     }
 }

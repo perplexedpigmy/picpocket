@@ -13,6 +13,7 @@ class FakePdfGenerator : PdfGenerator {
         context: Context,
         pages: List<Page>,
         outputUri: Uri,
+        pageSize: PageSize,
     ): PdfResult {
         generatedPages.add(pages)
         return if (shouldFail) {

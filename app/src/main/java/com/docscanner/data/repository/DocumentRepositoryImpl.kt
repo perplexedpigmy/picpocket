@@ -2,6 +2,7 @@ package com.docscanner.data.repository
 
 import com.docscanner.data.local.dao.DocumentDao
 import com.docscanner.data.local.dao.DocumentStats
+import com.docscanner.data.local.dao.OcrTextRow
 import com.docscanner.data.local.dao.PageDao
 import com.docscanner.data.local.entity.DocumentEntity
 import com.docscanner.data.local.entity.PageEntity
@@ -105,6 +106,14 @@ class DocumentRepositoryImpl @Inject constructor(
                 pageDao.update(page.copy(pageNumber = newOrder))
             }
         }
+    }
+
+    override suspend fun searchDocumentsByOcrText(query: String): Set<Long> {
+        val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (_: Exception) { return emptySet() }
+        return pageDao.getAllOcrTexts()
+            .filter { regex.containsMatchIn(it.ocrText) }
+            .map { it.documentId }
+            .toSet()
     }
 
     private fun DocumentEntity.toDomain(): Document {

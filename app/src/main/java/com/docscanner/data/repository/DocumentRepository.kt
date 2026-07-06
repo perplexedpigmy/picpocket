@@ -20,4 +20,5 @@ interface DocumentRepository {
     suspend fun deleteDocument(documentId: Long)
     suspend fun deletePage(pageId: Long)
     suspend fun reorderPages(documentId: Long, pageIds: List<Long>)
+    suspend fun searchDocumentsByOcrText(query: String): Set<Long>
 }

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,12 +39,15 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -54,7 +58,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -65,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.domain.filter.FilterType
+import com.docscanner.domain.pdf.PageSize
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
@@ -129,12 +136,30 @@ fun ScannerScreen(
         }
     }
 
+    var showPageSizeMenu by remember { mutableStateOf(false) }
+
+    BackHandler(
+        enabled = state.capturedPages.isNotEmpty() && !state.isAppendMode
+    ) {
+        viewModel.showDiscardDialog()
+    }
+
+    LaunchedEffect(state.discardConfirmed) {
+        if (state.discardConfirmed) onNavigateBack()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(if (state.isAppendMode) "Add Pages" else "Scan Document") },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
+                    IconButton(onClick = {
+                        if (state.capturedPages.isNotEmpty() && !state.isAppendMode) {
+                            viewModel.showDiscardDialog()
+                        } else {
+                            onNavigateBack()
+                        }
+                    }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -200,7 +225,34 @@ fun ScannerScreen(
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(8.dp))
+
+                if (state.capturedPages.isEmpty()) {
+                    Box {
+                        OutlinedButton(
+                            onClick = { showPageSizeMenu = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Page size: ${state.pageSize.shortLabel}")
+                        }
+                        DropdownMenu(
+                            expanded = showPageSizeMenu,
+                            onDismissRequest = { showPageSizeMenu = false },
+                        ) {
+                            PageSize.entries.forEach { size ->
+                                DropdownMenuItem(
+                                    text = { Text(size.label) },
+                                    onClick = {
+                                        viewModel.setPageSize(size)
+                                        showPageSizeMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                }
 
                 if (state.scanError != null) {
                     Text(
@@ -378,5 +430,25 @@ fun ScannerScreen(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    if (state.showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDiscardDialog() },
+            title = { Text("Discard pages?") },
+            text = {
+                Text("You have ${state.capturedPages.size} un-saved page(s) that will be lost.")
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmDiscard() }) {
+                    Text("Discard", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissDiscardDialog() }) {
+                    Text("Keep scanning")
+                }
+            },
+        )
     }
 }

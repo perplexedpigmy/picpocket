@@ -38,4 +38,12 @@ interface PageDao {
 
     @Query("SELECT MAX(pageNumber) FROM pages WHERE documentId = :documentId")
     suspend fun maxPageNumber(documentId: Long): Int?
+
+    @Query("SELECT documentId, ocrText FROM pages WHERE ocrText IS NOT NULL AND ocrText != ''")
+    suspend fun getAllOcrTexts(): List<OcrTextRow>
 }
+
+data class OcrTextRow(
+    val documentId: Long,
+    val ocrText: String,
+)

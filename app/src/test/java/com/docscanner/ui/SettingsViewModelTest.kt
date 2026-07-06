@@ -2,7 +2,11 @@ package com.docscanner.ui
 
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import com.docscanner.domain.pdf.PageSize
 import com.docscanner.ui.screens.settings.SettingsViewModel
+import com.docscanner.ui.theme.DarkMode
+import com.docscanner.ui.theme.Palette
+import com.docscanner.ui.theme.ThemeManager
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import org.junit.Assert.assertEquals
@@ -16,17 +20,22 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
-
+@OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
 
     @get:Rule
     val coroutineRule = MainCoroutineRule()
 
     private lateinit var viewModel: SettingsViewModel
+    private lateinit var themeManager: ThemeManager
 
     @Before
     fun setUp() {
-        viewModel = SettingsViewModel(ApplicationProvider.getApplicationContext())
+        themeManager = ThemeManager(ApplicationProvider.getApplicationContext())
+        viewModel = SettingsViewModel(
+            ApplicationProvider.getApplicationContext(),
+            themeManager,
+        )
     }
 
     @Test
@@ -54,5 +63,68 @@ class SettingsViewModelTest {
         viewModel.setDefaultSaveUri(uri)
         assertNotNull(viewModel.uiState.value.defaultSaveUri)
         assertTrue(viewModel.uiState.value.defaultSaveLabel.isNotEmpty())
+    }
+
+    @Test
+    fun `default dark mode is SYSTEM`() {
+        assertEquals(DarkMode.SYSTEM, viewModel.uiState.value.darkMode)
+    }
+
+    @Test
+    fun `set dark mode to DARK`() {
+        viewModel.setDarkMode(DarkMode.DARK)
+        assertEquals(DarkMode.DARK, viewModel.uiState.value.darkMode)
+    }
+
+    @Test
+    fun `set dark mode to LIGHT`() {
+        viewModel.setDarkMode(DarkMode.LIGHT)
+        assertEquals(DarkMode.LIGHT, viewModel.uiState.value.darkMode)
+    }
+
+    @Test
+    fun `set dark mode persists in ThemeManager`() {
+        viewModel.setDarkMode(DarkMode.DARK)
+        assertEquals(DarkMode.DARK, themeManager.config.value.darkMode)
+    }
+
+    @Test
+    fun `default palette is DEFAULT`() {
+        assertEquals(Palette.DEFAULT, viewModel.uiState.value.palette)
+    }
+
+    @Test
+    fun `set palette to OCEAN`() {
+        viewModel.setPalette(Palette.OCEAN)
+        assertEquals(Palette.OCEAN, viewModel.uiState.value.palette)
+    }
+
+    @Test
+    fun `set palette to FOREST`() {
+        viewModel.setPalette(Palette.FOREST)
+        assertEquals(Palette.FOREST, viewModel.uiState.value.palette)
+    }
+
+    @Test
+    fun `set palette persists in ThemeManager`() {
+        viewModel.setPalette(Palette.OCEAN)
+        assertEquals(Palette.OCEAN, themeManager.config.value.palette)
+    }
+
+    @Test
+    fun `default page size is A4`() {
+        assertEquals(PageSize.A4, viewModel.uiState.value.pageSize)
+    }
+
+    @Test
+    fun `set page size to LETTER`() {
+        viewModel.setPageSize(PageSize.LETTER)
+        assertEquals(PageSize.LETTER, viewModel.uiState.value.pageSize)
+    }
+
+    @Test
+    fun `set page size to A5`() {
+        viewModel.setPageSize(PageSize.A5)
+        assertEquals(PageSize.A5, viewModel.uiState.value.pageSize)
     }
 }

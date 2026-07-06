@@ -19,6 +19,7 @@ class SearchablePdfGenerator @Inject constructor() : PdfGenerator {
         context: Context,
         pages: List<Page>,
         outputUri: Uri,
+        pageSize: PageSize,
     ): PdfResult = withContext(Dispatchers.IO) {
         try {
             val document = PdfDocument()
@@ -30,21 +31,19 @@ class SearchablePdfGenerator @Inject constructor() : PdfGenerator {
                     BitmapFactory.decodeStream(stream)
                 } ?: continue
 
-                val width = bitmap.width
-                val height = bitmap.height
+                val bitmapW = bitmap.width
+                val bitmapH = bitmap.height
+                val isLandscape = bitmapW > bitmapH
+                val pageW = if (isLandscape) pageSize.heightPt else pageSize.widthPt
+                val pageH = if (isLandscape) pageSize.widthPt else pageSize.heightPt
 
-                val pageInfo = PdfDocument.PageInfo.Builder(
-                    if (width > height) height else width,
-                    if (width > height) width else height,
-                    page.pageNumber
-                ).create()
-
+                val pageInfo = PdfDocument.PageInfo.Builder(pageW, pageH, page.pageNumber).create()
                 val pdfPage = document.startPage(pageInfo)
-                val scaleX = pdfPage.canvas.width.toFloat() / width
-                val scaleY = pdfPage.canvas.height.toFloat() / height
+                val scaleX = pdfPage.canvas.width.toFloat() / bitmapW
+                val scaleY = pdfPage.canvas.height.toFloat() / bitmapH
                 val scale = minOf(scaleX, scaleY)
-                val scaledW = (width * scale).toInt()
-                val scaledH = (height * scale).toInt()
+                val scaledW = (bitmapW * scale).toInt()
+                val scaledH = (bitmapH * scale).toInt()
                 val offsetX = (pdfPage.canvas.width - scaledW) / 2f
                 val offsetY = (pdfPage.canvas.height - scaledH) / 2f
 

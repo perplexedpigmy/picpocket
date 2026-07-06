@@ -4,17 +4,33 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#1565C0"
-        android:pathData="M54,30 L54,78 M30,54 L78,54"
-        android:strokeWidth="6"
-        android:strokeColor="#FFFFFF" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M42,42 L66,42 L66,66 L42,66 Z"
-        android:strokeWidth="3"
-        android:strokeColor="#FFFFFF" />
-    <path
-        android:fillColor="#1565C0"
-        android:pathData="M46,46 L62,46 L62,62 L46,62 Z" />
+    <group
+        android:rotation="-15"
+        android:pivotX="54"
+        android:pivotY="54">
+        <!-- Scroll body -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M32,36 h44 a4,4 0,0,1 4,4 v28 a4,4 0,0,1 -4,4 h-44 a4,4 0,0,1 -4,-4 v-28 a4,4 0,0,1 4,-4 z" />
+        <!-- Top roll -->
+        <path
+            android:fillColor="#E3F2FD"
+            android:pathData="M30,30 h48 a5,5 0,0,1 5,5 v5 a5,5 0,0,1 -5,5 h-48 a5,5 0,0,1 -5,-5 v-5 a5,5 0,0,1 5,-5 z" />
+        <!-- Bottom roll -->
+        <path
+            android:fillColor="#E3F2FD"
+            android:pathData="M30,68 h48 a5,5 0,0,1 5,5 v5 a5,5 0,0,1 -5,5 h-48 a5,5 0,0,1 -5,-5 v-5 a5,5 0,0,1 5,-5 z" />
+        <!-- Text line 1 -->
+        <path
+            android:fillColor="#1565C0"
+            android:pathData="M40,44 h28 v2.5 h-28 z" />
+        <!-- Text line 2 -->
+        <path
+            android:fillColor="#1565C0"
+            android:pathData="M40,52.5 h20 v2.5 h-20 z" />
+        <!-- Text line 3 -->
+        <path
+            android:fillColor="#1565C0"
+            android:pathData="M40,61 h24 v2.5 h-24 z" />
+    </group>
 </vector>

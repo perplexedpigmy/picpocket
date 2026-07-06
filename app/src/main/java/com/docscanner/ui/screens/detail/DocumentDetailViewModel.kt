@@ -8,6 +8,7 @@ import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.di.SearchablePdf
+import com.docscanner.domain.pdf.PageSize
 import com.docscanner.domain.pdf.PdfGenerator
 import com.docscanner.domain.pdf.PdfResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -38,6 +39,8 @@ class DocumentDetailViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(DetailUiState())
     val uiState: StateFlow<DetailUiState> = _uiState.asStateFlow()
+
+    private val prefs = getApplication<Application>().getSharedPreferences("settings", 0)
 
     fun loadDocument(documentId: Long) {
         viewModelScope.launch {
@@ -116,7 +119,9 @@ class DocumentDetailViewModel @Inject constructor(
                 val doc = repository.getDocument(docId)
                 val outputUri = doc?.outputUri ?: return@launch
                 val app = getApplication<Application>()
-                val result = searchablePdf.generate(app, remainingPages, Uri.parse(outputUri))
+                val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
+                val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
+                val result = searchablePdf.generate(app, remainingPages, Uri.parse(outputUri), pageSize)
                 when (result) {
                     is PdfResult.Success -> repository.updateDocumentOutputUri(docId, result.uri)
                     is PdfResult.Error -> { /* PDF regeneration failed silently */ }

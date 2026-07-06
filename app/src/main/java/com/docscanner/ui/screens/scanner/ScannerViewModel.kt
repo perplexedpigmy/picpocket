@@ -15,6 +15,7 @@ import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.filter.FilterPipeline
 import com.docscanner.domain.filter.FilterType
 import com.docscanner.domain.ocr.OcrEngine
+import com.docscanner.domain.pdf.PageSize
 import com.docscanner.domain.pdf.PdfGenerator
 import com.docscanner.domain.pdf.PdfResult
 import com.docscanner.domain.scanner.ScannerManager
@@ -53,6 +54,9 @@ data class ScannerUiState(
     val pendingIntentSender: IntentSender? = null,
     val isAppendMode: Boolean = false,
     val appendPageCount: Int = 0,
+    val pageSize: PageSize = PageSize.A4,
+    val showDiscardDialog: Boolean = false,
+    val discardConfirmed: Boolean = false,
 )
 
 @HiltViewModel
@@ -68,17 +72,40 @@ class ScannerViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ScannerUiState())
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
+    private val prefs = application.getSharedPreferences("settings", 0)
     private var existingDocumentId: Long? = null
 
     init {
         val now = LocalDateTime.now()
         val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmm")
-        _uiState.update { it.copy(documentName = "Scan_${now.format(formatter)}") }
+        val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
+        val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
+        _uiState.update { it.copy(
+            documentName = "Scan_${now.format(formatter)}",
+            pageSize = pageSize,
+        ) }
     }
 
     fun setExistingDocumentId(id: Long) {
         existingDocumentId = id
         _uiState.update { it.copy(isAppendMode = true) }
+    }
+
+    fun setPageSize(size: PageSize) {
+        prefs.edit().putString("page_size", size.name).apply()
+        _uiState.update { it.copy(pageSize = size) }
+    }
+
+    fun showDiscardDialog() {
+        _uiState.update { it.copy(showDiscardDialog = true) }
+    }
+
+    fun dismissDiscardDialog() {
+        _uiState.update { it.copy(showDiscardDialog = false) }
+    }
+
+    fun confirmDiscard() {
+        _uiState.update { it.copy(showDiscardDialog = false, capturedPages = emptyList(), discardConfirmed = true) }
     }
 
     fun getScanIntentSender(activity: Activity) {
@@ -227,7 +254,8 @@ class ScannerViewModel @Inject constructor(
         val allPages = repository.getPages(documentId)
         val doc = repository.getDocument(documentId)
         val outputUri = doc?.outputUri ?: return
-        val pdfResult = searchablePdf.generate(app, allPages, Uri.parse(outputUri))
+        val pageSize = _uiState.value.pageSize
+        val pdfResult = searchablePdf.generate(app, allPages, Uri.parse(outputUri), pageSize)
         when (pdfResult) {
             is PdfResult.Error -> throw pdfResult.exception
             is PdfResult.Success -> {
@@ -273,7 +301,8 @@ class ScannerViewModel @Inject constructor(
                 }
 
                 val pages = repository.getPages(documentId)
-                val pdfResult = searchablePdf.generate(app, pages, outputUri)
+                val pageSize = _uiState.value.pageSize
+                val pdfResult = searchablePdf.generate(app, pages, outputUri, pageSize)
                 when (pdfResult) {
                     is PdfResult.Success -> {
                         repository.updateDocumentOutputUri(documentId, pdfResult.uri)

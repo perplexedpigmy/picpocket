@@ -9,5 +9,6 @@ interface PdfGenerator {
         context: Context,
         pages: List<Page>,
         outputUri: Uri,
+        pageSize: PageSize = PageSize.A4,
     ): PdfResult
 }

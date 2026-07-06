@@ -2,19 +2,22 @@ package com.docscanner.ui.screens.home
 
 import android.content.Context
 import android.content.Intent
-import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
 import com.docscanner.data.repository.DocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 import javax.inject.Inject
 
 enum class SortOrder(val label: String) {
@@ -33,9 +36,12 @@ data class HomeUiState(
     val sortOrder: SortOrder = SortOrder.MODIFIED_DESC,
     val showRenameDialog: Boolean = false,
     val renameText: String = "",
+    val searchQuery: String = "",
+    val searchInContent: Boolean = false,
 )
 
 @HiltViewModel
+@OptIn(FlowPreview::class)
 class HomeViewModel @Inject constructor(
     private val repository: DocumentRepository,
 ) : ViewModel() {
@@ -43,18 +49,47 @@ class HomeViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
     private val _sortOrder = MutableStateFlow(SortOrder.MODIFIED_DESC)
+    private val _searchQuery = MutableStateFlow("")
+    private val _searchInContent = MutableStateFlow(false)
+    private val _ocrMatchIds = MutableStateFlow<Set<Long>>(emptySet())
+    private val _debouncedQuery = _searchQuery.debounce(300)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
     init {
+        viewModelScope.launch {
+            combine(_searchInContent, _debouncedQuery) { a, b -> a to b }
+                .collectLatest { (inContent, query) ->
+                    if (inContent && query.isNotBlank()) {
+                        _ocrMatchIds.value = repository.searchDocumentsByOcrText(query)
+                    } else {
+                        _ocrMatchIds.value = emptySet()
+                    }
+                }
+        }
+
         viewModelScope.launch {
             combine(
                 repository.observeDocuments(),
                 _sortOrder,
-            ) { documents, sortOrder ->
+                _debouncedQuery,
+                _searchInContent,
+                _ocrMatchIds,
+            ) { docs, sortOrder, query, inContent, ocrIds ->
+                val filtered = if (query.isBlank()) docs
+                else {
+                    val nameMatch = docs.filter {
+                        try {
+                            Regex(query, RegexOption.IGNORE_CASE).containsMatchIn(it.name)
+                        } catch (_: Exception) { false }
+                    }
+                    if (inContent) (nameMatch + docs.filter { it.id in ocrIds }).distinctBy { it.id }
+                    else nameMatch
+                }
                 val sorted = when (sortOrder) {
-                    SortOrder.MODIFIED_DESC -> documents.sortedByDescending { it.updatedAt }
-                    SortOrder.CREATED_DESC -> documents.sortedByDescending { it.createdAt }
-                    SortOrder.SIZE_DESC -> documents.sortedByDescending { it.totalFileSize }
-                    SortOrder.NAME_ASC -> documents.sortedBy { it.name.lowercase() }
+                    SortOrder.MODIFIED_DESC -> filtered.sortedByDescending { it.updatedAt }
+                    SortOrder.CREATED_DESC -> filtered.sortedByDescending { it.createdAt }
+                    SortOrder.SIZE_DESC -> filtered.sortedByDescending { it.totalFileSize }
+                    SortOrder.NAME_ASC -> filtered.sortedBy { it.name.lowercase() }
                 }
                 sorted to sortOrder
             }.collect { (sorted, sortOrder) ->
@@ -72,6 +107,17 @@ class HomeViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+        _uiState.update { it.copy(searchQuery = query) }
+    }
+
+    fun toggleSearchInContent() {
+        val new = !_searchInContent.value
+        _searchInContent.value = new
+        _uiState.update { it.copy(searchInContent = new) }
     }
 
     fun setSortOrder(order: SortOrder) {

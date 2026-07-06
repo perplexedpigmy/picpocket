@@ -106,4 +106,12 @@ class FakeDocumentRepository : DocumentRepository {
             if (newOrder >= 0) page.copy(pageNumber = newOrder) else page
         }
     }
+
+    override suspend fun searchDocumentsByOcrText(query: String): Set<Long> {
+        val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (_: Exception) { return emptySet() }
+        return pages.values.flatMap { it.value }
+            .filter { it.ocrText != null && regex.containsMatchIn(it.ocrText!!) }
+            .map { it.documentId }
+            .toSet()
+    }
 }
