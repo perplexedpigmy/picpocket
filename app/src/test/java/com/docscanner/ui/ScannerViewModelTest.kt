@@ -156,6 +156,26 @@ class ScannerViewModelTest {
     }
 
     @Test
+    fun `append mode sets isAppendMode flag`() {
+        viewModel.setExistingDocumentId(123L)
+        assertTrue(viewModel.uiState.value.isAppendMode)
+    }
+
+    @Test
+    fun `append mode adds captured page to list`() = runTest {
+        val docId = repo.createDocument("Append Test")
+        repo.updateDocumentOutputUri(docId, "file:///test/output.pdf")
+        viewModel.setExistingDocumentId(docId)
+
+        viewModel.onScannerResult(
+            ScannerResult.PageCaptured(Uri.parse("content://test/page.jpg"))
+        )
+
+        assertEquals(1, viewModel.uiState.value.capturedPages.size)
+        assertTrue(viewModel.uiState.value.isAppendMode)
+    }
+
+    @Test
     fun `show and hide filter sheet`() {
         viewModel.onScannerResult(
             ScannerResult.PageCaptured(Uri.parse("content://page.jpg"))

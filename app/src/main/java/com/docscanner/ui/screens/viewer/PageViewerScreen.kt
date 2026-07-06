@@ -5,12 +5,12 @@ import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -41,6 +41,8 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Page
@@ -92,6 +94,26 @@ fun PageViewerScreen(
                 )
             }
         },
+        bottomBar = {
+            if (showControls) {
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "${pagerState.currentPage + 1} / ${state.pages.size}",
+                        color = MaterialTheme.colorScheme.onSurface,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier
+                            .background(
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                                MaterialTheme.shapes.small,
+                            )
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        },
     ) { padding ->
         HorizontalPager(
             state = pagerState,
@@ -111,25 +133,6 @@ fun PageViewerScreen(
             ) {
                 ZoomablePage(page = page)
             }
-        }
-    }
-
-    if (showControls) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.BottomCenter,
-        ) {
-            Text(
-                "${pagerState.currentPage + 1} / ${state.pages.size}",
-                color = MaterialTheme.colorScheme.onSurface,
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier
-                    .background(
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                        MaterialTheme.shapes.small,
-                    )
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            )
         }
     }
 }
@@ -155,10 +158,12 @@ private fun ZoomablePage(page: Page) {
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onSizeChanged { containerSize = it }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -175,8 +180,16 @@ private fun ZoomablePage(page: Page) {
 
                         if (isMultiTouch || scale > 1f) {
                             scale = (scale * zoomChange).coerceIn(1f, 5f)
-                            offsetX += panChange.x
-                            offsetY += panChange.y
+                            val fitScale = minOf(
+                                containerSize.width.toFloat() / bitmap.width,
+                                containerSize.height.toFloat() / bitmap.height,
+                            )
+                            val displayedWidth = bitmap.width * fitScale
+                            val displayedHeight = bitmap.height * fitScale
+                            val maxPanX = ((scale - 1f) * displayedWidth / 2f).coerceAtLeast(0f)
+                            val maxPanY = ((scale - 1f) * displayedHeight / 2f).coerceAtLeast(0f)
+                            offsetX = (offsetX + panChange.x).coerceIn(-maxPanX, maxPanX)
+                            offsetY = (offsetY + panChange.y).coerceIn(-maxPanY, maxPanY)
                             event.changes.forEach { change ->
                                 if (change.position != change.previousPosition) change.consume()
                             }

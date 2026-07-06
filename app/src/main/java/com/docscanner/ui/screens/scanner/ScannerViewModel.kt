@@ -51,6 +51,8 @@ data class ScannerUiState(
     val saveError: String? = null,
     val savedDocumentId: Long? = null,
     val pendingIntentSender: IntentSender? = null,
+    val isAppendMode: Boolean = false,
+    val appendPageCount: Int = 0,
 )
 
 @HiltViewModel
@@ -66,10 +68,17 @@ class ScannerViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ScannerUiState())
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
+    private var existingDocumentId: Long? = null
+
     init {
         val now = LocalDateTime.now()
         val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmm")
         _uiState.update { it.copy(documentName = "Scan_${now.format(formatter)}") }
+    }
+
+    fun setExistingDocumentId(id: Long) {
+        existingDocumentId = id
+        _uiState.update { it.copy(isAppendMode = true) }
     }
 
     fun getScanIntentSender(activity: Activity) {
@@ -98,11 +107,24 @@ class ScannerViewModel @Inject constructor(
         when (result) {
             is ScannerResult.PageCaptured -> {
                 val page = CapturedPage(imageUri = result.imageUri)
+                val docId = existingDocumentId
                 _uiState.update { state ->
                     state.copy(
                         capturedPages = state.capturedPages + page,
                         currentPageIndex = state.capturedPages.size,
                     )
+                }
+                if (docId != null) {
+                    viewModelScope.launch {
+                        _uiState.update { it.copy(isSaving = true, saveError = null) }
+                        try {
+                            val app = getApplication<Application>()
+                            saveNewPage(app, docId, page)
+                        } catch (e: Exception) {
+                            _uiState.update { it.copy(isSaving = false, saveError = e.message) }
+                        }
+                        _uiState.update { it.copy(isSaving = false) }
+                    }
                 }
             }
             is ScannerResult.Cancelled -> {
@@ -174,6 +196,46 @@ class ScannerViewModel @Inject constructor(
             pages.removeAt(index)
             state.copy(capturedPages = pages)
         }
+    }
+
+    private suspend fun saveNewPage(app: Application, documentId: Long, captured: CapturedPage) {
+        val pagesDir = File(app.cacheDir, "pages/$documentId")
+        pagesDir.mkdirs()
+
+        val existingPages = repository.getPages(documentId)
+        val nextPageIndex = existingPages.size
+
+        val bitmap = app.contentResolver.openInputStream(captured.imageUri)?.use { stream ->
+            BitmapFactory.decodeStream(stream)
+        } ?: return
+
+        val pageFile = File(pagesDir, "page_${nextPageIndex}.jpg")
+        withContext(Dispatchers.IO) {
+            FileOutputStream(pageFile).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+        }
+        val imageUri = Uri.fromFile(pageFile).toString()
+        val pageId = repository.addPage(documentId, imageUri, fileSizeBytes = pageFile.length())
+
+        val filteredBitmap = filterPipeline.apply(captured.filterTypes, bitmap)
+        val ocrResult = ocrEngine.recognize(filteredBitmap)
+        repository.updatePageOcrText(pageId, ocrResult.text)
+        bitmap.recycle()
+        filteredBitmap.recycle()
+
+        val allPages = repository.getPages(documentId)
+        val doc = repository.getDocument(documentId)
+        val outputUri = doc?.outputUri ?: return
+        val pdfResult = searchablePdf.generate(app, allPages, Uri.parse(outputUri))
+        when (pdfResult) {
+            is PdfResult.Error -> throw pdfResult.exception
+            is PdfResult.Success -> {
+                repository.updateDocumentOutputUri(documentId, pdfResult.uri)
+            }
+        }
+
+        _uiState.update { it.copy(appendPageCount = it.appendPageCount + 1) }
     }
 
     fun saveDocument(outputUri: Uri) {

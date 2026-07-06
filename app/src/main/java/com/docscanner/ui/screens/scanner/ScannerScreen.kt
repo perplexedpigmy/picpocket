@@ -2,6 +2,7 @@ package com.docscanner.ui.screens.scanner
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -70,12 +71,19 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScannerScreen(
+    documentId: Long? = null,
     onNavigateBack: () -> Unit,
     onDocumentSaved: (Long) -> Unit,
     viewModel: ScannerViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current as Activity
+
+    LaunchedEffect(documentId) {
+        if (documentId != null) {
+            viewModel.setExistingDocumentId(documentId)
+        }
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -103,6 +111,10 @@ fun ScannerScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         if (uri != null) {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
             val pickedDir = DocumentFile.fromTreeUri(context, uri)
             val docFile = pickedDir?.createFile("application/pdf", state.documentName.replace(" ", "_"))
             if (docFile != null) {
@@ -120,14 +132,14 @@ fun ScannerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Scan Document") },
+                title = { Text(if (state.isAppendMode) "Add Pages" else "Scan Document") },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    if (state.capturedPages.isNotEmpty()) {
+                    if (!state.isAppendMode && state.capturedPages.isNotEmpty()) {
                         IconButton(onClick = { viewModel.showNameDialog() }) {
                             Icon(Icons.Default.Save, contentDescription = "Save document")
                         }
@@ -151,6 +163,15 @@ fun ScannerScreen(
                     }
                 }
             } else {
+                if (state.isAppendMode) {
+                    Text(
+                        "Pages are auto-saved to your document",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+
                 Button(
                     onClick = {
                         if (ContextCompat.checkSelfPermission(
@@ -163,11 +184,15 @@ fun ScannerScreen(
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !state.isScanning,
+                    enabled = !state.isScanning && !state.isSaving,
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (state.capturedPages.isEmpty()) "Scan First Page" else "Add Another Page")
+                    Text(
+                        if (state.isAppendMode) "Scan Next Page"
+                        else if (state.capturedPages.isEmpty()) "Scan First Page"
+                        else "Add Another Page"
+                    )
                 }
 
                 if (state.isScanning) {
@@ -190,14 +215,16 @@ fun ScannerScreen(
                 if (state.capturedPages.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "Tap the button above to start scanning",
+                            if (state.isAppendMode) "Tap the button above to add a new page"
+                            else "Tap the button above to start scanning",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         )
                     }
                 } else {
                     Text(
-                        "${state.capturedPages.size} page(s) captured",
+                        if (state.isAppendMode) "${state.appendPageCount} page(s) added in this session"
+                        else "${state.capturedPages.size} page(s) captured",
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Spacer(Modifier.height(8.dp))

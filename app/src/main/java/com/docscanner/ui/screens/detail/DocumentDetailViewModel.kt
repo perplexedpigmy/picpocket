@@ -1,10 +1,15 @@
 package com.docscanner.ui.screens.detail
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.net.Uri
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
 import com.docscanner.data.repository.DocumentRepository
+import com.docscanner.di.SearchablePdf
+import com.docscanner.domain.pdf.PdfGenerator
+import com.docscanner.domain.pdf.PdfResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,8 +31,10 @@ data class DetailUiState(
 
 @HiltViewModel
 class DocumentDetailViewModel @Inject constructor(
+    application: Application,
     private val repository: DocumentRepository,
-) : ViewModel() {
+    @SearchablePdf private val searchablePdf: PdfGenerator,
+) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(DetailUiState())
     val uiState: StateFlow<DetailUiState> = _uiState.asStateFlow()
@@ -98,11 +105,23 @@ class DocumentDetailViewModel @Inject constructor(
     }
 
     fun deletePage(pageId: Long) {
+        val docId = _uiState.value.document?.id ?: return
         viewModelScope.launch {
             repository.deletePage(pageId)
-        }
-        _uiState.update {
-            it.copy(reorderablePages = it.reorderablePages.filter { p -> p.id != pageId })
+            _uiState.update {
+                it.copy(reorderablePages = it.reorderablePages.filter { p -> p.id != pageId })
+            }
+            val remainingPages = repository.getPages(docId)
+            if (remainingPages.isNotEmpty()) {
+                val doc = repository.getDocument(docId)
+                val outputUri = doc?.outputUri ?: return@launch
+                val app = getApplication<Application>()
+                val result = searchablePdf.generate(app, remainingPages, Uri.parse(outputUri))
+                when (result) {
+                    is PdfResult.Success -> repository.updateDocumentOutputUri(docId, result.uri)
+                    is PdfResult.Error -> { /* PDF regeneration failed silently */ }
+                }
+            }
         }
     }
 

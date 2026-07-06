@@ -17,12 +17,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
@@ -32,6 +33,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,7 +56,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Page
 import java.io.File
 import sh.calvin.reorderable.ReorderableItem
-import sh.calvin.reorderable.rememberReorderableLazyListState
+import sh.calvin.reorderable.rememberReorderableLazyGridState
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -62,6 +64,7 @@ fun DocumentDetailScreen(
     documentId: Long,
     onNavigateBack: () -> Unit,
     onPageView: (Long, Int) -> Unit = { _, _ -> },
+    onAddPage: (Long) -> Unit,
     viewModel: DocumentDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -96,6 +99,13 @@ fun DocumentDetailScreen(
                     }
                 },
             )
+        },
+        floatingActionButton = {
+            if (!state.isEditMode) {
+                FloatingActionButton(onClick = { onAddPage(documentId) }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add page")
+                }
+            }
         },
     ) { padding ->
         if (state.isLoading) {
@@ -134,17 +144,19 @@ fun DocumentDetailScreen(
                 Text("Pages", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
 
-                val lazyListState = rememberLazyListState()
-                val reorderableState = rememberReorderableLazyListState(
-                    lazyListState = lazyListState,
+                val lazyGridState = rememberLazyGridState()
+                val reorderableState = rememberReorderableLazyGridState(
+                    lazyGridState = lazyGridState,
                     onMove = { from, to ->
                         viewModel.reorderLocally(from.index, to.index)
                     },
                 )
 
-                LazyRow(
-                    state = lazyListState,
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(164.dp),
+                    state = lazyGridState,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                     contentPadding = PaddingValues(4.dp),
                 ) {
                     items(state.reorderablePages, key = { it.id }) { page ->
@@ -228,7 +240,7 @@ private fun PageThumbnail(
 ) {
     Card(
         modifier = modifier
-            .width(160.dp)
+            .fillMaxWidth()
             .aspectRatio(0.7f),
     ) {
         Box {

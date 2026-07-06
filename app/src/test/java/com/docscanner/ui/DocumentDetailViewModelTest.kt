@@ -1,6 +1,8 @@
 package com.docscanner.ui
 
+import android.app.Application
 import com.docscanner.data.FakeDocumentRepository
+import com.docscanner.domain.pdf.FakePdfGenerator
 import com.docscanner.ui.screens.detail.DocumentDetailViewModel
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -15,6 +17,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
@@ -24,16 +27,23 @@ class DocumentDetailViewModelTest {
     val coroutineRule = MainCoroutineRule()
 
     private lateinit var repo: FakeDocumentRepository
+    private lateinit var fakePdf: FakePdfGenerator
     private lateinit var viewModel: DocumentDetailViewModel
     private var documentId: Long = 0
 
     @Before
     fun setUp() = runTest {
         repo = FakeDocumentRepository()
+        fakePdf = FakePdfGenerator()
         documentId = repo.createDocument("My Document")
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
-        viewModel = DocumentDetailViewModel(repo)
+        repo.updateDocumentOutputUri(documentId, "file:///test/output.pdf")
+        viewModel = DocumentDetailViewModel(
+            RuntimeEnvironment.getApplication() as Application,
+            repo,
+            fakePdf,
+        )
     }
 
     @Test
@@ -83,7 +93,7 @@ class DocumentDetailViewModelTest {
     }
 
     @Test
-    fun `delete page removes it from pages list`() = runTest {
+    fun `delete page removes it from pages list and regenerates PDF`() = runTest {
         viewModel.loadDocument(documentId)
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
@@ -94,6 +104,7 @@ class DocumentDetailViewModelTest {
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(1, viewModel.uiState.value.pages.size)
+        assertEquals(1, fakePdf.generatedPages.lastOrNull()?.size)
     }
 
     @Test

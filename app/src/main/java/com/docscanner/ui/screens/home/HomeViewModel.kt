@@ -119,6 +119,10 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun deselectAll() {
+        _uiState.update { it.copy(selectedDocumentIds = emptySet()) }
+    }
+
     fun exitSelectionMode() {
         _uiState.update {
             it.copy(

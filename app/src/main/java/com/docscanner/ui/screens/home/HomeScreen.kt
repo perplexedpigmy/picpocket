@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.TabUnselected
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material3.AlertDialog
@@ -88,6 +89,11 @@ fun HomeScreen(
                     if (state.selectionMode) {
                         IconButton(onClick = { viewModel.selectAll() }) {
                             Icon(Icons.Default.SelectAll, contentDescription = "Select all")
+                        }
+                        if (state.selectedDocumentIds.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.deselectAll() }) {
+                                Icon(Icons.Default.TabUnselected, contentDescription = "Deselect all")
+                            }
                         }
                         if (state.selectedDocumentIds.size == 1) {
                             IconButton(onClick = { viewModel.showRenameDialog() }) {
