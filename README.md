@@ -1,6 +1,4 @@
-<div align="center">
-  <img src=".github/images/icon.svg" width="96" height="96" alt="DocScanner icon">
-</div>
+<img src=".github/images/icon.svg" width="72" height="72" align="left" alt="DocScanner icon">
 
 # DocScanner
 
