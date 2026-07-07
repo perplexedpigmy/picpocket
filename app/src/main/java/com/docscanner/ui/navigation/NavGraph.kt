@@ -7,6 +7,7 @@ import androidx.navigation.compose.composable
 import com.docscanner.ui.screens.detail.DocumentDetailScreen
 import com.docscanner.ui.screens.home.HomeScreen
 import com.docscanner.ui.screens.scanner.ScannerScreen
+import com.docscanner.ui.screens.donate.DonateScreen
 import com.docscanner.ui.screens.settings.SettingsScreen
 import com.docscanner.ui.screens.viewer.PageViewerScreen
 
@@ -17,6 +18,7 @@ object Routes {
     const val DOCUMENT_DETAIL = "document/{documentId}"
     const val PAGE_VIEWER = "viewer/{documentId}/{pageIndex}"
     const val SETTINGS = "settings"
+    const val DONATE = "donate"
 
     fun documentDetail(documentId: Long) = "document/$documentId"
     fun pageViewer(documentId: Long, pageIndex: Int) = "viewer/$documentId/$pageIndex"
@@ -83,6 +85,12 @@ fun DocScannerNavGraph(navController: NavHostController) {
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(
+                onNavigateBack = { navController.popBackStack() },
+                onDonateClick = { navController.navigate(Routes.DONATE) },
+            )
+        }
+        composable(Routes.DONATE) {
+            DonateScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }

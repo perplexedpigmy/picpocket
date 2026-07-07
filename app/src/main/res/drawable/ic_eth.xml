@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- ETH circle background -->
+    <path
+        android:fillColor="#627EEA"
+        android:pathData="M24,4A20,20 0,1,1 24,44A20,20 0,1,1 24,4Z" />
+    <!-- ETH symbol -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,10L24,27.4L35.3,24.4Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.6"
+        android:pathData="M24,10L12.7,24.4L24,27.4Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,30.1L24,38.3L35.4,26.3Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.6"
+        android:pathData="M24,38.3L24,30.1L12.7,26.3Z" />
+</vector>

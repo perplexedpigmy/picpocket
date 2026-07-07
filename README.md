@@ -97,6 +97,23 @@ settings.gradle.kts              — Project-level Gradle config
 | Navigation | Jetpack Navigation Compose |
 | Testing | JUnit 5, Robolectric, Turbine, MockK |
 
+## Support
+
+If you find this app useful, consider supporting its development:
+
+[![Ko-fi](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://ko-fi.com/pipolarbear)
+
+<details>
+<summary><b>Cryptocurrency</b></summary>
+
+| | Address | QR |
+|---|---|---|
+| <img src=".github/images/btc.svg" width="20"> **BTC** | `bc1qgyffnlhp2uz2uhpmhfrspc5qxpj3y9m4lwgga5` | <img src=".github/images/btc-qr.png" width="64"> |
+| <img src=".github/images/eth.svg" width="20"> **ETH** | `0x581b4810873698505FDF3aAf0a39430bb0D7d655` | <img src=".github/images/eth-qr.png" width="64"> |
+| <img src=".github/images/sol.svg" width="20"> **SOL** | `6awadeXmfc7JUMQL5SEgZXDE4yaFDgWkPNRySLDDmh7E` | <img src=".github/images/sol-qr.png" width="64"> |
+
+</details>
+
 ## License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
