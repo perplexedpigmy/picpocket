@@ -63,15 +63,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Tag
+import com.docscanner.ui.components.MatchMode
+import com.docscanner.ui.components.TagChip
 import com.docscanner.ui.components.TagSelectorSheet
 import com.docscanner.ui.theme.TagColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     onScanClick: () -> Unit,
@@ -195,6 +199,16 @@ fun HomeScreen(
                                     MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             )
                         }
+                        IconButton(onClick = { viewModel.showTagFilterSheet() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Label,
+                                contentDescription = "Filter by tags",
+                                tint = if (state.filterTagIds.isNotEmpty())
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            )
+                        }
                         if (state.searchQuery.isNotEmpty()) {
                             IconButton(onClick = { viewModel.setSearchQuery("") }) {
                                 Icon(
@@ -211,6 +225,27 @@ fun HomeScreen(
                     unfocusedBorderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f),
                 ),
             )
+
+            if (state.filterTagIds.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    state.filterTagIds.forEach { tagId ->
+                        val tag = allTags.find { it.id == tagId }
+                        if (tag != null) {
+                            TagChip(
+                                tag = tag,
+                                onRemove = { viewModel.toggleFilterTag(tagId) },
+                            )
+                        }
+                    }
+                }
+            }
 
             if (state.isLoading) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -294,6 +329,21 @@ fun HomeScreen(
             onCreateTag = { viewModel.createTagAndSelect(it) },
             onDone = { viewModel.applyTagsToSelected() },
             onDismiss = { viewModel.hideTagsSheet() },
+        )
+    }
+
+    if (state.showTagFilterSheet) {
+        TagSelectorSheet(
+            title = "Filter by Tags",
+            showCreate = false,
+            matchMode = state.filterMatchMode,
+            onMatchModeChange = { viewModel.setFilterMatchMode(it) },
+            allTags = allTags,
+            selectedTagIds = state.filterTagIds,
+            onToggleTag = { viewModel.toggleFilterTag(it) },
+            onCreateTag = {},
+            onDone = { viewModel.hideTagFilterSheet() },
+            onDismiss = { viewModel.hideTagFilterSheet() },
         )
     }
 

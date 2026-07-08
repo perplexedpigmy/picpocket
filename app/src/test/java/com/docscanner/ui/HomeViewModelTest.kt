@@ -1,6 +1,7 @@
 package com.docscanner.ui
 
 import com.docscanner.data.FakeDocumentRepository
+import com.docscanner.ui.components.MatchMode
 import com.docscanner.ui.screens.home.HomeViewModel
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -296,5 +297,63 @@ class HomeViewModelTest {
         assertEquals(1, docTags.size)
         assertEquals("Important", docTags[0].name)
         assertFalse(viewModel.uiState.value.showTagsSheet)
+    }
+
+    @Test
+    fun `showTagFilterSheet toggles state`() {
+        assertFalse(viewModel.uiState.value.showTagFilterSheet)
+        viewModel.showTagFilterSheet()
+        assertTrue(viewModel.uiState.value.showTagFilterSheet)
+        viewModel.hideTagFilterSheet()
+        assertFalse(viewModel.uiState.value.showTagFilterSheet)
+    }
+
+    @Test
+    fun `toggleFilterTag adds and removes tag from filter`() {
+        viewModel.toggleFilterTag(1L)
+        assertTrue(1L in viewModel.uiState.value.filterTagIds)
+        viewModel.toggleFilterTag(1L)
+        assertFalse(1L in viewModel.uiState.value.filterTagIds)
+    }
+
+    @Test
+    fun `filter by tag limits visible documents`() = runTest {
+        val doc1 = repo.createDocument("Work Doc")
+        val doc2 = repo.createDocument("Personal Doc")
+        val tagId = repo.createTag("Work")
+        repo.setDocumentTags(doc1, listOf(tagId))
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleFilterTag(tagId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(1, viewModel.uiState.value.documents.size)
+        assertEquals("Work Doc", viewModel.uiState.value.documents[0].name)
+    }
+
+    @Test
+    fun `setFilterMatchMode updates mode`() {
+        assertEquals(MatchMode.MATCH_ANY, viewModel.uiState.value.filterMatchMode)
+        viewModel.setFilterMatchMode(MatchMode.MATCH_ALL)
+        assertEquals(MatchMode.MATCH_ALL, viewModel.uiState.value.filterMatchMode)
+    }
+
+    @Test
+    fun `filterMatchAll requires all tags`() = runTest {
+        val doc1 = repo.createDocument("All Tags Doc")
+        val doc2 = repo.createDocument("Partial Tags Doc")
+        val work = repo.createTag("Work")
+        val urgent = repo.createTag("Urgent")
+        repo.setDocumentTags(doc1, listOf(work, urgent))
+        repo.setDocumentTags(doc2, listOf(work))
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleFilterTag(work)
+        viewModel.toggleFilterTag(urgent)
+        viewModel.setFilterMatchMode(MatchMode.MATCH_ALL)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals(1, viewModel.uiState.value.documents.size)
+        assertEquals("All Tags Doc", viewModel.uiState.value.documents[0].name)
     }
 }

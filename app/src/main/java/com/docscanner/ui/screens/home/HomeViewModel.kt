@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
+import com.docscanner.ui.components.MatchMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +43,9 @@ data class HomeUiState(
     val showTagsSheet: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
     val documentTags: Map<Long, List<Tag>> = emptyMap(),
+    val showTagFilterSheet: Boolean = false,
+    val filterTagIds: Set<Long> = emptySet(),
+    val filterMatchMode: MatchMode = MatchMode.MATCH_ANY,
 )
 
 @HiltViewModel
@@ -58,6 +62,9 @@ class HomeViewModel @Inject constructor(
     private val _ocrMatchIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _debouncedQuery = _searchQuery.debounce(300)
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    private val _filterTagIds = MutableStateFlow<Set<Long>>(emptySet())
+    private val _filterMatchMode = MutableStateFlow(MatchMode.MATCH_ANY)
 
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
@@ -97,7 +104,19 @@ class HomeViewModel @Inject constructor(
                 _debouncedQuery,
                 _searchInContent,
                 _ocrMatchIds,
-            ) { docs, sortOrder, query, inContent, ocrIds ->
+            ) { docs, sortOrder, query, inContent, ocrIds -> listOf(docs, sortOrder, query, inContent, ocrIds) }
+            .combine(
+                combine(_filterTagIds, _filterMatchMode, _documentTagMap) { a, b, c -> listOf(a, b, c) }
+            ) { main, filter ->
+                val docs = main[0] as List<Document>
+                val sortOrder = main[1] as SortOrder
+                val query = main[2] as String
+                val inContent = main[3] as Boolean
+                val ocrIds = main[4] as Set<*>
+                val filterIds = filter[0] as Set<*>
+                val matchMode = filter[1] as MatchMode
+                val tagMap = filter[2] as Map<*, *>
+
                 val filtered = if (query.isBlank()) docs
                 else {
                     val nameMatch = docs.filter {
@@ -108,11 +127,22 @@ class HomeViewModel @Inject constructor(
                     if (inContent) (nameMatch + docs.filter { it.id in ocrIds }).distinctBy { it.id }
                     else nameMatch
                 }
+                val tagIds = filterIds as Set<Long>
+                val tagFiltered = if (tagIds.isEmpty()) filtered
+                else {
+                    @Suppress("UNCHECKED_CAST")
+                    val dtm = tagMap as Map<Long, List<Tag>>
+                    filtered.filter { doc ->
+                        val docTagIds = dtm[doc.id].orEmpty().map { it.id }.toSet()
+                        if (matchMode == MatchMode.MATCH_ALL) tagIds.all { it in docTagIds }
+                        else tagIds.any { it in docTagIds }
+                    }
+                }
                 val sorted = when (sortOrder) {
-                    SortOrder.MODIFIED_DESC -> filtered.sortedByDescending { it.updatedAt }
-                    SortOrder.CREATED_DESC -> filtered.sortedByDescending { it.createdAt }
-                    SortOrder.SIZE_DESC -> filtered.sortedByDescending { it.totalFileSize }
-                    SortOrder.NAME_ASC -> filtered.sortedBy { it.name.lowercase() }
+                    SortOrder.MODIFIED_DESC -> tagFiltered.sortedByDescending { it.updatedAt }
+                    SortOrder.CREATED_DESC -> tagFiltered.sortedByDescending { it.createdAt }
+                    SortOrder.SIZE_DESC -> tagFiltered.sortedByDescending { it.totalFileSize }
+                    SortOrder.NAME_ASC -> tagFiltered.sortedBy { it.name.lowercase() }
                 }
                 sorted to sortOrder
             }.collect { (sorted, sortOrder) ->
@@ -286,6 +316,27 @@ class HomeViewModel @Inject constructor(
             }
             _uiState.update { it.copy(showTagsSheet = false) }
         }
+    }
+
+    fun showTagFilterSheet() {
+        _uiState.update { it.copy(showTagFilterSheet = true) }
+    }
+
+    fun hideTagFilterSheet() {
+        _uiState.update { it.copy(showTagFilterSheet = false) }
+    }
+
+    fun toggleFilterTag(tagId: Long) {
+        val newSet = _uiState.value.filterTagIds.let { ids ->
+            if (tagId in ids) ids - tagId else ids + tagId
+        }
+        _filterTagIds.value = newSet
+        _uiState.update { it.copy(filterTagIds = newSet) }
+    }
+
+    fun setFilterMatchMode(mode: MatchMode) {
+        _filterMatchMode.value = mode
+        _uiState.update { it.copy(filterMatchMode = mode) }
     }
 
     fun shareSelected(context: Context) {

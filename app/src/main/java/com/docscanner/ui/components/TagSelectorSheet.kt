@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -44,6 +45,11 @@ import com.docscanner.data.model.Tag
 import com.docscanner.ui.theme.TagColors
 import com.docscanner.util.fuzzyMatch
 
+enum class MatchMode(val label: String) {
+    MATCH_ANY("Match any"),
+    MATCH_ALL("Match all"),
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TagSelectorSheet(
@@ -53,6 +59,10 @@ fun TagSelectorSheet(
     onCreateTag: (String) -> Unit,
     onDone: () -> Unit,
     onDismiss: () -> Unit,
+    title: String = "Add Tags",
+    showCreate: Boolean = true,
+    matchMode: MatchMode? = null,
+    onMatchModeChange: ((MatchMode) -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState()
     var query by remember { mutableStateOf("") }
@@ -78,9 +88,31 @@ fun TagSelectorSheet(
                 .padding(bottom = 32.dp),
         ) {
             Text(
-                "Add Tags",
+                title,
                 style = MaterialTheme.typography.titleMedium,
             )
+
+            if (matchMode != null && onMatchModeChange != null) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    MatchMode.entries.forEach { mode ->
+                        val isSelected = mode == matchMode
+                        TextButton(
+                            onClick = { onMatchModeChange(mode) },
+                            content = {
+                                Text(
+                                    mode.label,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                )
+                            },
+                        )
+                    }
+                }
+            }
 
             Spacer(Modifier.height(12.dp))
 
@@ -110,7 +142,7 @@ fun TagSelectorSheet(
 
             Spacer(Modifier.height(12.dp))
 
-            if (query.isNotBlank() && filtered.isEmpty()) {
+            if (showCreate && query.isNotBlank() && filtered.isEmpty()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -185,7 +217,7 @@ fun TagSelectorSheet(
 }
 
 @Composable
-private fun TagChip(
+fun TagChip(
     tag: Tag,
     onRemove: () -> Unit,
 ) {
