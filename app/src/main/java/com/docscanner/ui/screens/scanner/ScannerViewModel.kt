@@ -12,7 +12,9 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Tag
+import com.docscanner.data.model.TriggerEvent
 import com.docscanner.data.repository.DocumentRepository
+import com.docscanner.data.workflow.WorkflowExecutor
 import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.filter.FilterPipeline
 import com.docscanner.domain.filter.FilterType
@@ -23,10 +25,13 @@ import com.docscanner.domain.pdf.PdfResult
 import com.docscanner.domain.scanner.ScannerManager
 import com.docscanner.domain.scanner.ScannerResult
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -58,6 +63,7 @@ data class ScannerUiState(
     val appendPageCount: Int = 0,
     val pageSize: PageSize = PageSize.A4,
     val showTagsDialog: Boolean = false,
+    val showOverwriteDialog: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
 )
 
@@ -69,6 +75,7 @@ class ScannerViewModel @Inject constructor(
     private val filterPipeline: FilterPipeline,
     private val ocrEngine: OcrEngine,
     @SearchablePdf private val searchablePdf: PdfGenerator,
+    private val workflowExecutor: WorkflowExecutor,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(ScannerUiState())
@@ -84,6 +91,8 @@ class ScannerViewModel @Inject constructor(
         SharingStarted.WhileSubscribed(5000),
         emptyList(),
     )
+
+    private var pagesAddedJob: Job? = null
 
     init {
         val now = LocalDateTime.now()
@@ -260,6 +269,19 @@ class ScannerViewModel @Inject constructor(
         }
 
         _uiState.update { it.copy(appendPageCount = it.appendPageCount + 1) }
+
+        pagesAddedJob?.cancel()
+        pagesAddedJob = viewModelScope.launch {
+            delay(3000)
+            val docTags = repository.observeDocumentTags(documentId).first()
+            val tagIds = docTags.map { it.id }
+            val automations = repository.getAutomationsForTagIds(tagIds)
+                .filter { it.triggerEvent == TriggerEvent.PAGES_ADDED }
+            if (automations.isNotEmpty()) {
+                val scannedDoc = repository.getDocument(documentId) ?: return@launch
+                workflowExecutor.execute(scannedDoc, automations)
+            }
+        }
     }
 
     fun showTagsDialog() {
@@ -298,11 +320,56 @@ class ScannerViewModel @Inject constructor(
         val state = _uiState.value
         if (state.documentName.isBlank() || state.capturedPages.isEmpty()) return
 
+        val app = getApplication<Application>()
+        val docName = state.documentName
+        val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
+
+        val fileExists = if (defaultSaveUri != null) {
+            val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
+            dir?.findFile("${docName.replace(" ", "_")}.pdf")?.exists() == true
+        } else {
+            File(app.cacheDir, "$docName.pdf").exists()
+        }
+
+        if (fileExists) {
+            _uiState.update { it.copy(showOverwriteDialog = true) }
+            return
+        }
+
+        proceedWithSave()
+    }
+
+    fun confirmOverwrite() {
+        _uiState.update { it.copy(showOverwriteDialog = false) }
+        proceedWithSave(overwrite = true)
+    }
+
+    fun cancelOverwrite() {
+        _uiState.update { it.copy(showOverwriteDialog = false) }
+    }
+
+    private fun proceedWithSave(overwrite: Boolean = false) {
+        val state = _uiState.value
         _uiState.update { it.copy(isSaving = true, saveError = null) }
 
         viewModelScope.launch {
             try {
                 val app = getApplication<Application>()
+
+                if (overwrite) {
+                    val existing = repository.getDocumentsByName(state.documentName)
+                    for (doc in existing) {
+                        File(app.cacheDir, "pages/${doc.id}").deleteRecursively()
+                    }
+                    repository.deleteDocumentsByName(state.documentName)
+
+                    val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
+                    if (defaultSaveUri != null) {
+                        val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
+                        dir?.findFile("${state.documentName.replace(" ", "_")}.pdf")?.delete()
+                    }
+                }
+
                 val documentId = repository.createDocument(state.documentName)
                 val pagesDir = File(app.cacheDir, "pages/$documentId")
                 pagesDir.mkdirs()
@@ -350,6 +417,16 @@ class ScannerViewModel @Inject constructor(
         val docId = pendingDocumentId ?: return
         pendingDocumentId = null
         _uiState.update { it.copy(savedDocumentId = docId, showTagsDialog = false, capturedPages = emptyList()) }
+        viewModelScope.launch {
+            val docTags = repository.observeDocumentTags(docId).first()
+            val tagIds = docTags.map { it.id }
+            val automations = repository.getAutomationsForTagIds(tagIds)
+                .filter { it.triggerEvent == TriggerEvent.CREATE }
+            if (automations.isNotEmpty()) {
+                val doc = repository.getDocument(docId) ?: return@launch
+                workflowExecutor.execute(doc, automations)
+            }
+        }
     }
 
     private fun resolveOutputUri(app: Application, docName: String): Uri {

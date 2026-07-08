@@ -258,7 +258,7 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Text(
-                            "Create, rename, or delete tags",
+                            "Create, rename, or delete tags. Manage workflows.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

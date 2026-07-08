@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
 import com.docscanner.data.FakeDocumentRepository
+import com.docscanner.data.workflow.WorkflowExecutor
 import com.docscanner.domain.filter.BinarizeFilter
 import com.docscanner.domain.filter.BrightnessFilter
 import com.docscanner.domain.filter.ContrastFilter
@@ -55,6 +56,9 @@ class ScannerViewModelTest {
             GrayscaleFilter(), ContrastFilter(), BrightnessFilter(),
             SharpenFilter(), BinarizeFilter(),
         )
+        val executor = WorkflowExecutor(
+            RuntimeEnvironment.getApplication() as Application,
+        )
         viewModel = ScannerViewModel(
             RuntimeEnvironment.getApplication() as Application,
             repo,
@@ -62,6 +66,7 @@ class ScannerViewModelTest {
             pipeline,
             fakeOcr,
             fakePdf,
+            executor,
         )
     }
 

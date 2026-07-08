@@ -35,7 +35,7 @@ class DocumentRepositoryTest {
             ApplicationProvider.getApplicationContext(),
             DocScannerDatabase::class.java,
         ).allowMainThreadQueries().build()
-        repository = DocumentRepositoryImpl(database.documentDao(), database.pageDao(), database.tagDao())
+        repository = DocumentRepositoryImpl(database.documentDao(), database.pageDao(), database.tagDao(), database.tagAutomationDao())
     }
 
     @After

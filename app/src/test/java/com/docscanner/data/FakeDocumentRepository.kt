@@ -3,6 +3,7 @@ package com.docscanner.data
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
 import com.docscanner.data.model.Tag
+import com.docscanner.data.model.TagAutomation
 import com.docscanner.data.repository.DocumentRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -87,6 +88,15 @@ class FakeDocumentRepository : DocumentRepository {
         }
     }
 
+    override suspend fun getDocumentsByName(name: String): List<Document> {
+        return documents.value.filter { it.name == name }
+    }
+
+    override suspend fun deleteDocumentsByName(name: String) {
+        val ids = documents.value.filter { it.name == name }.map { it.id }
+        deleteDocuments(ids)
+    }
+
     override suspend fun deleteDocuments(documentIds: List<Long>) {
         documents.value = documents.value.filter { it.id !in documentIds }
         for (id in documentIds) {
@@ -164,5 +174,25 @@ class FakeDocumentRepository : DocumentRepository {
             map[id] = state.value
         }
         documentTagMap.value = map
+    }
+
+    private val tagAutomations = MutableStateFlow<List<TagAutomation>>(emptyList())
+
+    override fun observeTagAutomations(tagId: Long): Flow<List<TagAutomation>> {
+        return tagAutomations.map { list -> list.filter { it.tagId == tagId } }
+    }
+
+    override suspend fun getAutomationsForTagIds(tagIds: List<Long>): List<TagAutomation> {
+        return tagAutomations.value.filter { it.tagId in tagIds }
+    }
+
+    override suspend fun createAutomation(automation: TagAutomation): Long {
+        val id = tagAutomations.value.size.toLong() + 1
+        tagAutomations.value = tagAutomations.value + automation.copy(id = id)
+        return id
+    }
+
+    override suspend fun deleteAutomation(id: Long) {
+        tagAutomations.value = tagAutomations.value.filter { it.id != id }
     }
 }

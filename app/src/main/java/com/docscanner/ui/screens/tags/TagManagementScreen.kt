@@ -3,11 +3,11 @@ package com.docscanner.ui.screens.tags
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -138,38 +138,29 @@ fun TagManagementScreen(
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    contentPadding = PaddingValues(
                         horizontal = 16.dp, vertical = 8.dp,
                     ),
                 ) {
                     items(state.allTags, key = { it.id }) { tag ->
-                        if (state.editingTagId == tag.id) {
-                            EditingTagRow(
-                                name = state.editingTagName,
-                                onNameChange = { viewModel.updateEditingName(it) },
-                                onSave = { viewModel.saveEdit() },
-                                onCancel = { viewModel.cancelEdit() },
-                            )
-                        } else {
-                            TagRow(
-                                tag = tag,
-                                isSelected = tag.id in state.selectedTagIds,
-                                selectionMode = state.selectionMode,
-                                onClick = {
-                                    if (state.selectionMode) {
-                                        viewModel.toggleSelection(tag.id)
-                                    } else {
-                                        viewModel.startEditing(tag.id)
-                                    }
-                                },
-                                onLongClick = {
-                                    if (!state.selectionMode) {
-                                        viewModel.enterSelectionMode(tag.id)
-                                    }
-                                },
-                                onDelete = { viewModel.showDeleteConfirmationForTag(tag.id) },
-                            )
-                        }
+                        TagRow(
+                            tag = tag,
+                            isSelected = tag.id in state.selectedTagIds,
+                            selectionMode = state.selectionMode,
+                            onClick = {
+                                if (state.selectionMode) {
+                                    viewModel.toggleSelection(tag.id)
+                                } else {
+                                    viewModel.showDetailSheet(tag.id)
+                                }
+                            },
+                            onLongClick = {
+                                if (!state.selectionMode) {
+                                    viewModel.enterSelectionMode(tag.id)
+                                }
+                            },
+                            onDelete = { viewModel.showDeleteConfirmationForTag(tag.id) },
+                        )
                     }
                 }
             }
@@ -217,6 +208,29 @@ fun TagManagementScreen(
                 TextButton(onClick = { viewModel.hideCreateDialog() }) { Text("Cancel") }
             },
         )
+    }
+
+    val sheetTag = state.detailSheetTag
+    if (sheetTag != null) {
+        TagDetailSheet(
+            tag = sheetTag,
+            automations = state.detailSheetAutomations,
+            onRename = { viewModel.renameDetailTag(it) },
+            onDeleteAutomation = { viewModel.deleteWorkflow(it) },
+            onAddWorkflow = { viewModel.showWorkflowConfig() },
+            onDismiss = { viewModel.hideDetailSheet() },
+        )
+    }
+
+    if (state.showWorkflowConfig) {
+        val wfTagId = state.detailSheetTagId
+        if (wfTagId != null) {
+            WorkflowConfigSheet(
+                tagId = wfTagId,
+                onSave = { viewModel.createWorkflow(it) },
+                onDismiss = { viewModel.hideWorkflowConfig() },
+            )
+        }
     }
 }
 

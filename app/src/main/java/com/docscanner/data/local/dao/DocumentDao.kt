@@ -49,6 +49,9 @@ interface DocumentDao {
     """)
     suspend fun getByIdWithStats(id: Long): DocumentStats?
 
+    @Query("SELECT * FROM documents WHERE name = :name")
+    suspend fun findByName(name: String): List<DocumentEntity>
+
     @Query("SELECT * FROM documents WHERE id = :id")
     suspend fun getById(id: Long): DocumentEntity?
 

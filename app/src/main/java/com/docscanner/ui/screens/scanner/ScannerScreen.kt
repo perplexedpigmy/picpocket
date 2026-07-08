@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -364,8 +365,28 @@ fun ScannerScreen(
         )
     }
 
+    if (state.showOverwriteDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelOverwrite() },
+            title = { Text("Overwrite file?") },
+            text = {
+                Text("A file named \"${state.documentName}.pdf\" already exists. Overwrite it?")
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmOverwrite() }) {
+                    Text("Overwrite")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelOverwrite() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     if (state.showFilterSheet) {
-        val sheetState = rememberModalBottomSheetState()
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
             onDismissRequest = { viewModel.hideFilterSheet() },
             sheetState = sheetState,
@@ -373,7 +394,8 @@ fun ScannerScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp)
+                    .navigationBarsPadding(),
             ) {
                 Text("Image Filters", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(12.dp))

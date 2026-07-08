@@ -5,14 +5,19 @@ import com.docscanner.data.local.dao.DocumentStats
 import com.docscanner.data.local.dao.DocumentTagRow
 import com.docscanner.data.local.dao.OcrTextRow
 import com.docscanner.data.local.dao.PageDao
+import com.docscanner.data.local.dao.TagAutomationDao
 import com.docscanner.data.local.dao.TagDao
 import com.docscanner.data.local.entity.DocumentEntity
 import com.docscanner.data.local.entity.DocumentTagCrossRef
 import com.docscanner.data.local.entity.PageEntity
+import com.docscanner.data.local.entity.TagAutomationEntity
 import com.docscanner.data.local.entity.TagEntity
+import com.docscanner.data.local.entity.toDomain
+import com.docscanner.data.local.entity.toEntity
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
 import com.docscanner.data.model.Tag
+import com.docscanner.data.model.TagAutomation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
@@ -24,6 +29,7 @@ class DocumentRepositoryImpl @Inject constructor(
     private val documentDao: DocumentDao,
     private val pageDao: PageDao,
     private val tagDao: TagDao,
+    private val tagAutomationDao: TagAutomationDao,
 ) : DocumentRepository {
 
     override fun observeDocuments(): Flow<List<Document>> {
@@ -52,6 +58,17 @@ class DocumentRepositoryImpl @Inject constructor(
 
     override suspend fun getPage(pageId: Long): Page? {
         return pageDao.getById(pageId)?.toDomain()
+    }
+
+    override suspend fun getDocumentsByName(name: String): List<Document> {
+        return documentDao.findByName(name).map { it.toDomain() }
+    }
+
+    override suspend fun deleteDocumentsByName(name: String) {
+        val docs = documentDao.findByName(name)
+        if (docs.isNotEmpty()) {
+            documentDao.deleteByIds(docs.map { it.id })
+        }
     }
 
     override suspend fun createDocument(name: String): Long {
@@ -195,6 +212,24 @@ class DocumentRepositoryImpl @Inject constructor(
             filterTypeOrdinal = filterTypeOrdinal,
             createdAt = createdAt,
         )
+    }
+
+    override fun observeTagAutomations(tagId: Long): Flow<List<TagAutomation>> {
+        return tagAutomationDao.observeByTagId(tagId).map { entities ->
+            entities.map { it.toDomain() }
+        }
+    }
+
+    override suspend fun getAutomationsForTagIds(tagIds: List<Long>): List<TagAutomation> {
+        return tagAutomationDao.getByTagIds(tagIds).map { it.toDomain() }
+    }
+
+    override suspend fun createAutomation(automation: TagAutomation): Long {
+        return tagAutomationDao.insert(automation.toEntity())
+    }
+
+    override suspend fun deleteAutomation(id: Long) {
+        tagAutomationDao.deleteById(id)
     }
 
     private fun TagEntity.toDomain(): Tag {

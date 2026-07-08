@@ -3,6 +3,7 @@ package com.docscanner.ui.screens.tags
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Tag
+import com.docscanner.data.model.TagAutomation
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.util.fuzzyMatch
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,6 +30,10 @@ data class TagManagementUiState(
     val pendingDeleteTagId: Long? = null,
     val editingTagId: Long? = null,
     val editingTagName: String = "",
+    val detailSheetTagId: Long? = null,
+    val detailSheetTag: Tag? = null,
+    val detailSheetAutomations: List<TagAutomation> = emptyList(),
+    val showWorkflowConfig: Boolean = false,
 )
 
 @HiltViewModel
@@ -43,8 +48,6 @@ class TagManagementViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     private val _debouncedQuery = _searchQuery.debounce(200)
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
-
-    private var searchJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -171,6 +174,52 @@ class TagManagementViewModel @Inject constructor(
                 exitSelectionMode()
                 hideDeleteConfirmation()
             }
+        }
+    }
+
+    fun showDetailSheet(tagId: Long) {
+        val tag = _uiState.value.allTags.find { it.id == tagId } ?: return
+        _uiState.update { it.copy(detailSheetTagId = tagId, detailSheetTag = tag) }
+        viewModelScope.launch {
+            repository.observeTagAutomations(tagId).collect { automations ->
+                val current = _uiState.value
+                if (current.detailSheetTagId == tagId) {
+                    _uiState.update { it.copy(detailSheetAutomations = automations) }
+                }
+            }
+        }
+    }
+
+    fun hideDetailSheet() {
+        _uiState.update { it.copy(detailSheetTagId = null, detailSheetTag = null, detailSheetAutomations = emptyList()) }
+    }
+
+    fun renameDetailTag(name: String) {
+        val tagId = _uiState.value.detailSheetTagId ?: return
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            repository.renameTag(tagId, name)
+        }
+    }
+
+    fun showWorkflowConfig() {
+        _uiState.update { it.copy(showWorkflowConfig = true) }
+    }
+
+    fun hideWorkflowConfig() {
+        _uiState.update { it.copy(showWorkflowConfig = false) }
+    }
+
+    fun createWorkflow(automation: TagAutomation) {
+        viewModelScope.launch {
+            repository.createAutomation(automation)
+            hideWorkflowConfig()
+        }
+    }
+
+    fun deleteWorkflow(id: Long) {
+        viewModelScope.launch {
+            repository.deleteAutomation(id)
         }
     }
 }

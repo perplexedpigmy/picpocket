@@ -3,6 +3,7 @@ package com.docscanner.data.repository
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
 import com.docscanner.data.model.Tag
+import com.docscanner.data.model.TagAutomation
 import kotlinx.coroutines.flow.Flow
 
 interface DocumentRepository {
@@ -17,6 +18,8 @@ interface DocumentRepository {
     suspend fun updatePageOcrText(pageId: Long, ocrText: String)
     suspend fun updateDocumentName(documentId: Long, name: String)
     suspend fun updateDocumentOutputUri(documentId: Long, uri: String)
+    suspend fun getDocumentsByName(name: String): List<Document>
+    suspend fun deleteDocumentsByName(name: String)
     suspend fun deleteDocuments(documentIds: List<Long>)
     suspend fun deleteDocument(documentId: Long)
     suspend fun deletePage(pageId: Long)
@@ -31,4 +34,9 @@ interface DocumentRepository {
     suspend fun renameTag(tagId: Long, name: String)
     suspend fun deleteTags(tagIds: List<Long>)
     suspend fun setDocumentTags(documentId: Long, tagIds: List<Long>)
+
+    fun observeTagAutomations(tagId: Long): Flow<List<TagAutomation>>
+    suspend fun getAutomationsForTagIds(tagIds: List<Long>): List<TagAutomation>
+    suspend fun createAutomation(automation: TagAutomation): Long
+    suspend fun deleteAutomation(id: Long)
 }
