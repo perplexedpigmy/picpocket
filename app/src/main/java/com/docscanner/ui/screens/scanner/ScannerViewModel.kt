@@ -8,6 +8,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Tag
@@ -22,7 +23,6 @@ import com.docscanner.domain.pdf.PdfResult
 import com.docscanner.domain.scanner.ScannerManager
 import com.docscanner.domain.scanner.ScannerResult
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -30,7 +30,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.time.LocalDateTime
@@ -58,8 +57,6 @@ data class ScannerUiState(
     val isAppendMode: Boolean = false,
     val appendPageCount: Int = 0,
     val pageSize: PageSize = PageSize.A4,
-    val showDiscardDialog: Boolean = false,
-    val discardConfirmed: Boolean = false,
     val showTagsDialog: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
 )
@@ -79,6 +76,7 @@ class ScannerViewModel @Inject constructor(
 
     private val prefs = application.getSharedPreferences("settings", 0)
     private var existingDocumentId: Long? = null
+    private var pendingDocumentId: Long? = null
 
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
@@ -106,18 +104,6 @@ class ScannerViewModel @Inject constructor(
     fun setPageSize(size: PageSize) {
         prefs.edit().putString("page_size", size.name).apply()
         _uiState.update { it.copy(pageSize = size) }
-    }
-
-    fun showDiscardDialog() {
-        _uiState.update { it.copy(showDiscardDialog = true) }
-    }
-
-    fun dismissDiscardDialog() {
-        _uiState.update { it.copy(showDiscardDialog = false) }
-    }
-
-    fun confirmDiscard() {
-        _uiState.update { it.copy(showDiscardDialog = false, capturedPages = emptyList(), discardConfirmed = true) }
     }
 
     fun getScanIntentSender(activity: Activity) {
@@ -249,10 +235,8 @@ class ScannerViewModel @Inject constructor(
         } ?: return
 
         val pageFile = File(pagesDir, "page_${nextPageIndex}.jpg")
-        withContext(Dispatchers.IO) {
-            FileOutputStream(pageFile).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-            }
+        FileOutputStream(pageFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
         }
         val imageUri = Uri.fromFile(pageFile).toString()
         val pageId = repository.addPage(documentId, imageUri, fileSizeBytes = pageFile.length())
@@ -287,6 +271,7 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun toggleTag(tagId: Long) {
+        val docId = pendingDocumentId ?: return
         _uiState.update { state ->
             val newSet = if (tagId in state.selectedTagIds) {
                 state.selectedTagIds - tagId
@@ -295,16 +280,21 @@ class ScannerViewModel @Inject constructor(
             }
             state.copy(selectedTagIds = newSet)
         }
-    }
-
-    fun createTagAndSelect(name: String) {
         viewModelScope.launch {
-            val tagId = repository.createTag(name)
-            _uiState.update { it.copy(selectedTagIds = it.selectedTagIds + tagId) }
+            repository.setDocumentTags(docId, _uiState.value.selectedTagIds.toList())
         }
     }
 
-    fun saveDocument(outputUri: Uri) {
+    fun createTagAndSelect(name: String) {
+        val docId = pendingDocumentId ?: return
+        viewModelScope.launch {
+            val tagId = repository.createTag(name)
+            _uiState.update { it.copy(selectedTagIds = it.selectedTagIds + tagId) }
+            repository.setDocumentTags(docId, (_uiState.value.selectedTagIds + tagId).toList())
+        }
+    }
+
+    fun confirmNameAndSave() {
         val state = _uiState.value
         if (state.documentName.isBlank() || state.capturedPages.isEmpty()) return
 
@@ -312,12 +302,8 @@ class ScannerViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val documentId = repository.createDocument(state.documentName)
-                val tagIds = state.selectedTagIds.toList()
-                if (tagIds.isNotEmpty()) {
-                    repository.setDocumentTags(documentId, tagIds)
-                }
                 val app = getApplication<Application>()
+                val documentId = repository.createDocument(state.documentName)
                 val pagesDir = File(app.cacheDir, "pages/$documentId")
                 pagesDir.mkdirs()
 
@@ -327,10 +313,8 @@ class ScannerViewModel @Inject constructor(
                     } ?: continue
 
                     val pageFile = File(pagesDir, "page_$i.jpg")
-                    withContext(Dispatchers.IO) {
-                        FileOutputStream(pageFile).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-                        }
+                    FileOutputStream(pageFile).use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
                     }
                     val imageUri = Uri.fromFile(pageFile).toString()
                     val pageId = repository.addPage(documentId, imageUri, fileSizeBytes = pageFile.length())
@@ -344,11 +328,13 @@ class ScannerViewModel @Inject constructor(
 
                 val pages = repository.getPages(documentId)
                 val pageSize = _uiState.value.pageSize
+                val outputUri = resolveOutputUri(app, state.documentName)
                 val pdfResult = searchablePdf.generate(app, pages, outputUri, pageSize)
                 when (pdfResult) {
                     is PdfResult.Success -> {
                         repository.updateDocumentOutputUri(documentId, pdfResult.uri)
-                        _uiState.update { it.copy(isSaving = false, savedDocumentId = documentId) }
+                        pendingDocumentId = documentId
+                        _uiState.update { it.copy(isSaving = false, showTagsDialog = true) }
                     }
                     is PdfResult.Error -> {
                         _uiState.update { it.copy(isSaving = false, saveError = pdfResult.exception.message) }
@@ -358,5 +344,21 @@ class ScannerViewModel @Inject constructor(
                 _uiState.update { it.copy(isSaving = false, saveError = e.message) }
             }
         }
+    }
+
+    fun completeSave() {
+        val docId = pendingDocumentId ?: return
+        pendingDocumentId = null
+        _uiState.update { it.copy(savedDocumentId = docId, showTagsDialog = false, capturedPages = emptyList()) }
+    }
+
+    private fun resolveOutputUri(app: Application, docName: String): Uri {
+        val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
+        if (defaultSaveUri != null) {
+            val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
+            val pdfFile = dir?.createFile("application/pdf", docName.replace(" ", "_"))
+            if (pdfFile != null) return pdfFile.uri
+        }
+        return Uri.fromFile(File(app.cacheDir, "${docName}.pdf"))
     }
 }

@@ -2,11 +2,8 @@ package com.docscanner.ui.screens.scanner
 
 import android.Manifest
 import android.app.Activity
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.BitmapFactory
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -73,8 +70,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.domain.filter.FilterType
 import com.docscanner.domain.pdf.PageSize
 import com.docscanner.ui.components.TagSelectorSheet
-import androidx.documentfile.provider.DocumentFile
-import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,22 +112,6 @@ fun ScannerScreen(
 
     val allTags by viewModel.allTags.collectAsState()
 
-    val saveLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
-            val pickedDir = DocumentFile.fromTreeUri(context, uri)
-            val docFile = pickedDir?.createFile("application/pdf", state.documentName.replace(" ", "_"))
-            if (docFile != null) {
-                viewModel.saveDocument(docFile.uri)
-            }
-        }
-    }
-
     LaunchedEffect(state.savedDocumentId) {
         state.savedDocumentId?.let { docId ->
             onDocumentSaved(docId)
@@ -141,28 +120,12 @@ fun ScannerScreen(
 
     var showPageSizeMenu by remember { mutableStateOf(false) }
 
-    BackHandler(
-        enabled = state.capturedPages.isNotEmpty() && !state.isAppendMode
-    ) {
-        viewModel.showDiscardDialog()
-    }
-
-    LaunchedEffect(state.discardConfirmed) {
-        if (state.discardConfirmed) onNavigateBack()
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(if (state.isAppendMode) "Add Pages" else "Scan Document") },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        if (state.capturedPages.isNotEmpty() && !state.isAppendMode) {
-                            viewModel.showDiscardDialog()
-                        } else {
-                            onNavigateBack()
-                        }
-                    }) {
+                    IconButton(onClick = { onNavigateBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -376,7 +339,7 @@ fun ScannerScreen(
                     keyboardActions = KeyboardActions(
                         onDone = {
                             viewModel.hideNameDialog()
-                            saveLauncher.launch(null)
+                            viewModel.confirmNameAndSave()
                         }
                     ),
                     modifier = Modifier.fillMaxWidth(),
@@ -386,11 +349,11 @@ fun ScannerScreen(
                 TextButton(
                     onClick = {
                         viewModel.hideNameDialog()
-                        viewModel.showTagsDialog()
+                        viewModel.confirmNameAndSave()
                     },
                     enabled = state.documentName.isNotBlank(),
                 ) {
-                    Text("Next")
+                    Text("Save")
                 }
             },
             dismissButton = {
@@ -441,31 +404,10 @@ fun ScannerScreen(
             selectedTagIds = state.selectedTagIds,
             onToggleTag = { viewModel.toggleTag(it) },
             onCreateTag = { viewModel.createTagAndSelect(it) },
-            onDone = {
-                viewModel.hideTagsDialog()
-                saveLauncher.launch(null)
-            },
-            onDismiss = { viewModel.hideTagsDialog() },
+            onDone = { viewModel.completeSave() },
+            onDismiss = { viewModel.completeSave() },
         )
     }
 
-    if (state.showDiscardDialog) {
-        AlertDialog(
-            onDismissRequest = { viewModel.dismissDiscardDialog() },
-            title = { Text("Discard pages?") },
-            text = {
-                Text("You have ${state.capturedPages.size} un-saved page(s) that will be lost.")
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.confirmDiscard() }) {
-                    Text("Discard", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.dismissDiscardDialog() }) {
-                    Text("Keep scanning")
-                }
-            },
-        )
-    }
+
 }

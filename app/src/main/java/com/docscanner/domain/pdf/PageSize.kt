@@ -16,4 +16,5 @@ enum class PageSize(
     LETTER("Letter (8.5×11in)", "Letter", 612, 792),
     LEGAL("Legal (8.5×14in)", "Legal", 612, 1008),
     TABLOID("Tabloid (11×17in)", "Tabloid", 792, 1224),
+    ID_CARD("ID card (85.6×54mm)", "ID", 243, 153),
 }

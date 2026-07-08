@@ -1,6 +1,7 @@
 package com.docscanner.ui
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.net.Uri
 import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.domain.filter.BinarizeFilter
@@ -17,6 +18,7 @@ import com.docscanner.domain.scanner.ScannerResult
 import com.docscanner.ui.screens.scanner.ScannerViewModel
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -29,6 +31,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import java.io.File
+import java.io.FileOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
@@ -146,14 +150,70 @@ class ScannerViewModelTest {
     }
 
     @Test
-    fun `save document with no name does nothing`() = runTest {
-        viewModel.onScannerResult(
-            ScannerResult.PageCaptured(Uri.parse("content://page.jpg"))
-        )
-        viewModel.saveDocument(Uri.parse("file:///test/output.pdf"))
+    fun `confirmNameAndSave with no pages does nothing`() = runTest {
+        viewModel.confirmNameAndSave()
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         assertNull(viewModel.uiState.value.savedDocumentId)
+        assertFalse(viewModel.uiState.value.showTagsDialog)
+    }
+
+    private fun createTempImageUri(): Uri {
+        val ctx = RuntimeEnvironment.getApplication()
+        val file = File(ctx.cacheDir, "test_page_${System.nanoTime()}.png")
+        val bitmap = android.graphics.Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.WHITE)
+        FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+        bitmap.recycle()
+        return Uri.fromFile(file)
+    }
+
+    @Test
+    fun `confirmNameAndSave saves document and shows tags dialog`() = runTest {
+        viewModel.updateDocumentName("MyDoc")
+        val uri = createTempImageUri()
+        viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
+        assertFalse("capturedPages should not be empty", viewModel.uiState.value.capturedPages.isEmpty())
+        assertFalse("documentName should not be blank", viewModel.uiState.value.documentName.isBlank())
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertNull("saveError should be null: " + viewModel.uiState.value.saveError, viewModel.uiState.value.saveError)
+        assertFalse("isSaving should be false", viewModel.uiState.value.isSaving)
+        assertTrue("showTagsDialog should be true after save", viewModel.uiState.value.showTagsDialog)
+        val docs = repo.observeDocuments().first()
+        assertEquals(1, docs.size)
+        assertEquals("MyDoc", docs[0].name)
+    }
+
+    @Test
+    fun `completeSave sets savedDocumentId and clears tags dialog`() = runTest {
+        viewModel.updateDocumentName("MyDoc")
+        viewModel.onScannerResult(ScannerResult.PageCaptured(createTempImageUri()))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("showTagsDialog should be true", viewModel.uiState.value.showTagsDialog)
+
+        viewModel.completeSave()
+        assertNotNull("savedDocumentId should be set", viewModel.uiState.value.savedDocumentId)
+        assertFalse("showTagsDialog should be false", viewModel.uiState.value.showTagsDialog)
+    }
+
+    @Test
+    fun `toggleTag applies tag immediately after save`() = runTest {
+        val tagId = repo.createTag("Work")
+        viewModel.updateDocumentName("MyDoc")
+        viewModel.onScannerResult(ScannerResult.PageCaptured(createTempImageUri()))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("showTagsDialog should be true", viewModel.uiState.value.showTagsDialog)
+
+        viewModel.toggleTag(tagId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val docs = repo.observeDocuments().first()
+        val docTags = repo.observeDocumentTags(docs[0].id).first()
+        assertEquals(1, docTags.size)
     }
 
     @Test
