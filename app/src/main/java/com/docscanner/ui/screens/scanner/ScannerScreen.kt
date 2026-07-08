@@ -72,6 +72,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.domain.filter.FilterType
 import com.docscanner.domain.pdf.PageSize
+import com.docscanner.ui.components.TagSelectorSheet
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
@@ -113,6 +114,8 @@ fun ScannerScreen(
             viewModel.clearPendingIntentSender()
         }
     }
+
+    val allTags by viewModel.allTags.collectAsState()
 
     val saveLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -383,11 +386,11 @@ fun ScannerScreen(
                 TextButton(
                     onClick = {
                         viewModel.hideNameDialog()
-                        saveLauncher.launch(null)
+                        viewModel.showTagsDialog()
                     },
                     enabled = state.documentName.isNotBlank(),
                 ) {
-                    Text("Save")
+                    Text("Next")
                 }
             },
             dismissButton = {
@@ -430,6 +433,20 @@ fun ScannerScreen(
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    if (state.showTagsDialog) {
+        TagSelectorSheet(
+            allTags = allTags,
+            selectedTagIds = state.selectedTagIds,
+            onToggleTag = { viewModel.toggleTag(it) },
+            onCreateTag = { viewModel.createTagAndSelect(it) },
+            onDone = {
+                viewModel.hideTagsDialog()
+                saveLauncher.launch(null)
+            },
+            onDismiss = { viewModel.hideTagsDialog() },
+        )
     }
 
     if (state.showDiscardDialog) {

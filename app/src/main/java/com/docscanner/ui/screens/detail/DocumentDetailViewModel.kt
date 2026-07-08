@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
+import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.pdf.PageSize
@@ -13,8 +14,10 @@ import com.docscanner.domain.pdf.PdfGenerator
 import com.docscanner.domain.pdf.PdfResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -28,6 +31,9 @@ data class DetailUiState(
     val renameText: String = "",
     val isEditMode: Boolean = false,
     val showDeleteConfirmation: Boolean = false,
+    val showTagsSheet: Boolean = false,
+    val selectedTagIds: Set<Long> = emptySet(),
+    val documentTags: List<Tag> = emptyList(),
 )
 
 @HiltViewModel
@@ -42,7 +48,17 @@ class DocumentDetailViewModel @Inject constructor(
 
     private val prefs = getApplication<Application>().getSharedPreferences("settings", 0)
 
+    private var currentDocumentId: Long = 0
+
+    private val _allTags = repository.observeAllTags()
+    val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyList(),
+    )
+
     fun loadDocument(documentId: Long) {
+        currentDocumentId = documentId
         viewModelScope.launch {
             repository.observeDocument(documentId).collect { doc ->
                 _uiState.update { it.copy(document = doc) }
@@ -57,6 +73,50 @@ class DocumentDetailViewModel @Inject constructor(
                     _uiState.update { it.copy(pages = pages, isLoading = false) }
                 }
             }
+        }
+        viewModelScope.launch {
+            repository.observeDocumentTags(documentId).collect { tags ->
+                _uiState.update { it.copy(documentTags = tags) }
+            }
+        }
+    }
+
+    fun showTagsSheet() {
+        _uiState.update { it.copy(
+            showTagsSheet = true,
+            selectedTagIds = it.documentTags.map { it.id }.toSet(),
+        ) }
+    }
+
+    fun hideTagsSheet() {
+        _uiState.update { it.copy(showTagsSheet = false) }
+    }
+
+    fun toggleTag(tagId: Long) {
+        _uiState.update { state ->
+            val newSet = if (tagId in state.selectedTagIds) {
+                state.selectedTagIds - tagId
+            } else {
+                state.selectedTagIds + tagId
+            }
+            state.copy(selectedTagIds = newSet)
+        }
+    }
+
+    fun createTagAndSelect(name: String) {
+        viewModelScope.launch {
+            val tagId = repository.createTag(name)
+            _uiState.update { it.copy(selectedTagIds = it.selectedTagIds + tagId) }
+        }
+    }
+
+    fun applyTags() {
+        val docId = currentDocumentId
+        if (docId == 0L) return
+        val tagIds = _uiState.value.selectedTagIds.toList()
+        viewModelScope.launch {
+            repository.setDocumentTags(docId, tagIds)
+            _uiState.update { it.copy(showTagsSheet = false) }
         }
     }
 

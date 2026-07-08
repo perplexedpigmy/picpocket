@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.docscanner.data.local.DocScannerDatabase
 import com.docscanner.data.local.dao.DocumentDao
 import com.docscanner.data.local.dao.PageDao
+import com.docscanner.data.local.dao.TagDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -31,4 +32,7 @@ object DatabaseModule {
 
     @Provides
     fun providePageDao(database: DocScannerDatabase): PageDao = database.pageDao()
+
+    @Provides
+    fun provideTagDao(database: DocScannerDatabase): TagDao = database.tagDao()
 }

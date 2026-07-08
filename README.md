@@ -20,6 +20,7 @@ A document scanner for Android that auto-detects document bounds, captures multi
 - **Drag-and-drop reorder** — Rearrange pages in edit mode
 - **Full-screen viewer** — Swipe between pages, pinch-to-zoom, double-tap to reset
 - **Search documents** — Regex search across document names and OCR content with debounce
+- **Document tagging** — Color-coded tags with Gmail-style autocomplete; manage tags individually or batch on multiple documents via multi-select
 - **Dark mode** — System/Light/Dark with 4 color palettes (Royal, Blue, Teal, Green)
 - **Page size selection** — A0–A6, Letter, Legal, Tabloid
 - **SAF save location** — User picks where to save via Storage Access Framework; no storage permissions needed
@@ -50,7 +51,7 @@ The project uses the standard Android Gradle plugin. No special setup is require
 
 ```bash
 ./gradlew assembleDebug          # Build debug APK
-./gradlew testDebug              # Run unit tests (90+ tests)
+./gradlew testDebug              # Run unit tests (108+ tests)
 ./gradlew assembleRelease        # Build release APK (requires signing config)
 ```
 
@@ -62,18 +63,20 @@ app/
 │   ├── main/
 │   │   ├── java/com/docscanner/
 │   │   │   ├── data/
-│   │   │   │   ├── local/       — Room database, DAOs, entities
+│   │   │   │   ├── local/       — Room database, DAOs, entities (documents, pages, tags)
 │   │   │   │   └── repository/  — DocumentRepository implementation
 │   │   │   ├── domain/
 │   │   │   │   └── pdf/         — PdfGenerator, PageSize, OCR logic
 │   │   │   ├── ui/
 │   │   │   │   ├── screens/
-│   │   │   │   │   ├── home/    — Document list with search
-│   │   │   │   │   ├── scanner/ — Camera + capture workflow
-│   │   │   │   │   ├── detail/  — Page grid, reorder, delete
+│   │   │   │   │   ├── home/    — Document list with search, multi-select tagging
+│   │   │   │   │   ├── scanner/ — Camera + capture workflow, tag during creation
+│   │   │   │   │   ├── detail/  — Page grid, reorder, delete, tag management
 │   │   │   │   │   ├── viewer/  — Full-screen zoomable viewer
-│   │   │   │   │   └── settings/— Theme, PDF options, storage
+│   │   │   │   │   ├── tags/    — Tag management (create, rename, delete)
+│   │   │   │   │   └── settings/— Theme, PDF options, storage, tags entry
 │   │   │   │   └── theme/       — Material3 theming, palettes
+│   │   │   ├── components/      — Reusable composables (tag selector, etc.)
 │   │   │   ├── navigation/      — NavGraph
 │   │   │   └── di/              — Hilt dependency injection
 │   │   └── res/

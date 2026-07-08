@@ -2,6 +2,7 @@ package com.docscanner.data.repository
 
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
+import com.docscanner.data.model.Tag
 import kotlinx.coroutines.flow.Flow
 
 interface DocumentRepository {
@@ -21,4 +22,13 @@ interface DocumentRepository {
     suspend fun deletePage(pageId: Long)
     suspend fun reorderPages(documentId: Long, pageIds: List<Long>)
     suspend fun searchDocumentsByOcrText(query: String): Set<Long>
+
+    fun observeAllTags(): Flow<List<Tag>>
+    fun observeDocumentTags(documentId: Long): Flow<List<Tag>>
+    fun observeDocumentTagMap(): Flow<Map<Long, List<Tag>>>
+    fun searchTags(query: String): Flow<List<Tag>>
+    suspend fun createTag(name: String): Long
+    suspend fun renameTag(tagId: Long, name: String)
+    suspend fun deleteTags(tagIds: List<Long>)
+    suspend fun setDocumentTags(documentId: Long, tagIds: List<Long>)
 }

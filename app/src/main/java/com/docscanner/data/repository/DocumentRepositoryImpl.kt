@@ -2,14 +2,20 @@ package com.docscanner.data.repository
 
 import com.docscanner.data.local.dao.DocumentDao
 import com.docscanner.data.local.dao.DocumentStats
+import com.docscanner.data.local.dao.DocumentTagRow
 import com.docscanner.data.local.dao.OcrTextRow
 import com.docscanner.data.local.dao.PageDao
+import com.docscanner.data.local.dao.TagDao
 import com.docscanner.data.local.entity.DocumentEntity
+import com.docscanner.data.local.entity.DocumentTagCrossRef
 import com.docscanner.data.local.entity.PageEntity
+import com.docscanner.data.local.entity.TagEntity
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
+import com.docscanner.data.model.Tag
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,6 +23,7 @@ import javax.inject.Singleton
 class DocumentRepositoryImpl @Inject constructor(
     private val documentDao: DocumentDao,
     private val pageDao: PageDao,
+    private val tagDao: TagDao,
 ) : DocumentRepository {
 
     override fun observeDocuments(): Flow<List<Document>> {
@@ -116,6 +123,46 @@ class DocumentRepositoryImpl @Inject constructor(
             .toSet()
     }
 
+    override fun observeAllTags(): Flow<List<Tag>> {
+        return tagDao.observeAll().map { entities -> entities.map { it.toDomain() } }
+    }
+
+    override fun observeDocumentTags(documentId: Long): Flow<List<Tag>> {
+        return tagDao.observeDocumentTags(documentId).map { entities -> entities.map { it.toDomain() } }
+    }
+
+    override fun observeDocumentTagMap(): Flow<Map<Long, List<Tag>>> {
+        return tagDao.observeAllDocumentTags().map { rows ->
+            rows.groupBy { it.documentId }.mapValues { (_, tags) ->
+                tags.map { Tag(id = it.tagId, name = it.tagName, colorIndex = it.tagColorIndex) }
+            }
+        }
+    }
+
+    override fun searchTags(query: String): Flow<List<Tag>> {
+        return tagDao.search(query).map { entities -> entities.map { it.toDomain() } }
+    }
+
+    override suspend fun createTag(name: String): Long {
+        val nextColor = (tagDao.getMaxColorIndex() + 1) % 8
+        return tagDao.insert(TagEntity(name = name, colorIndex = nextColor))
+    }
+
+    override suspend fun renameTag(tagId: Long, name: String) {
+        tagDao.update(TagEntity(id = tagId, name = name))
+    }
+
+    override suspend fun deleteTags(tagIds: List<Long>) {
+        tagDao.deleteByIds(tagIds)
+    }
+
+    override suspend fun setDocumentTags(documentId: Long, tagIds: List<Long>) {
+        tagDao.deleteAllDocumentTags(documentId)
+        for (tagId in tagIds) {
+            tagDao.insertDocumentTag(DocumentTagCrossRef(documentId = documentId, tagId = tagId))
+        }
+    }
+
     private fun DocumentEntity.toDomain(): Document {
         return Document(
             id = id,
@@ -147,6 +194,14 @@ class DocumentRepositoryImpl @Inject constructor(
             ocrText = ocrText,
             filterTypeOrdinal = filterTypeOrdinal,
             createdAt = createdAt,
+        )
+    }
+
+    private fun TagEntity.toDomain(): Tag {
+        return Tag(
+            id = id,
+            name = name,
+            colorIndex = colorIndex,
         )
     }
 }

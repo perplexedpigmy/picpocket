@@ -10,6 +10,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.filter.FilterPipeline
@@ -23,8 +24,10 @@ import com.docscanner.domain.scanner.ScannerResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -57,6 +60,8 @@ data class ScannerUiState(
     val pageSize: PageSize = PageSize.A4,
     val showDiscardDialog: Boolean = false,
     val discardConfirmed: Boolean = false,
+    val showTagsDialog: Boolean = false,
+    val selectedTagIds: Set<Long> = emptySet(),
 )
 
 @HiltViewModel
@@ -74,6 +79,13 @@ class ScannerViewModel @Inject constructor(
 
     private val prefs = application.getSharedPreferences("settings", 0)
     private var existingDocumentId: Long? = null
+
+    private val _allTags = repository.observeAllTags()
+    val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyList(),
+    )
 
     init {
         val now = LocalDateTime.now()
@@ -266,6 +278,32 @@ class ScannerViewModel @Inject constructor(
         _uiState.update { it.copy(appendPageCount = it.appendPageCount + 1) }
     }
 
+    fun showTagsDialog() {
+        _uiState.update { it.copy(showTagsDialog = true) }
+    }
+
+    fun hideTagsDialog() {
+        _uiState.update { it.copy(showTagsDialog = false) }
+    }
+
+    fun toggleTag(tagId: Long) {
+        _uiState.update { state ->
+            val newSet = if (tagId in state.selectedTagIds) {
+                state.selectedTagIds - tagId
+            } else {
+                state.selectedTagIds + tagId
+            }
+            state.copy(selectedTagIds = newSet)
+        }
+    }
+
+    fun createTagAndSelect(name: String) {
+        viewModelScope.launch {
+            val tagId = repository.createTag(name)
+            _uiState.update { it.copy(selectedTagIds = it.selectedTagIds + tagId) }
+        }
+    }
+
     fun saveDocument(outputUri: Uri) {
         val state = _uiState.value
         if (state.documentName.isBlank() || state.capturedPages.isEmpty()) return
@@ -275,6 +313,10 @@ class ScannerViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val documentId = repository.createDocument(state.documentName)
+                val tagIds = state.selectedTagIds.toList()
+                if (tagIds.isNotEmpty()) {
+                    repository.setDocumentTags(documentId, tagIds)
+                }
                 val app = getApplication<Application>()
                 val pagesDir = File(app.cacheDir, "pages/$documentId")
                 pagesDir.mkdirs()

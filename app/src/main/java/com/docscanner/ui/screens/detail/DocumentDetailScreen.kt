@@ -5,9 +5,13 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +21,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -24,7 +32,9 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
@@ -54,11 +64,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Page
+import com.docscanner.ui.components.TagSelectorSheet
+import com.docscanner.ui.theme.TagColors
 import java.io.File
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyGridState
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun DocumentDetailScreen(
     documentId: Long,
@@ -68,6 +80,7 @@ fun DocumentDetailScreen(
     viewModel: DocumentDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val allTags by viewModel.allTags.collectAsState()
 
     LaunchedEffect(documentId) {
         viewModel.loadDocument(documentId)
@@ -136,6 +149,60 @@ fun DocumentDetailScreen(
                                 "Pages: ${state.pages.size}",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            if (state.documentTags.isNotEmpty()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text("Tags", style = MaterialTheme.typography.labelMedium)
+                                Spacer(Modifier.height(4.dp))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    state.documentTags.forEach { tag ->
+                                        val chipColor = TagColors.getOrElse(tag.colorIndex) { TagColors[0] }
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(chipColor.copy(alpha = 0.15f))
+                                                .padding(start = 8.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(6.dp)
+                                                    .clip(CircleShape)
+                                                    .background(chipColor),
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                tag.name,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = chipColor,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.showTagsSheet() }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    "Add tags",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                         }
                     }
                 }
@@ -224,6 +291,17 @@ fun DocumentDetailScreen(
                     Text("Cancel")
                 }
             },
+        )
+    }
+
+    if (state.showTagsSheet) {
+        TagSelectorSheet(
+            allTags = allTags,
+            selectedTagIds = state.selectedTagIds,
+            onToggleTag = { viewModel.toggleTag(it) },
+            onCreateTag = { viewModel.createTagAndSelect(it) },
+            onDone = { viewModel.applyTags() },
+            onDismiss = { viewModel.hideTagsSheet() },
         )
     }
 }

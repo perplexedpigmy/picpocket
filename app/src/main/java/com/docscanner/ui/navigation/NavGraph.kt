@@ -9,6 +9,7 @@ import com.docscanner.ui.screens.home.HomeScreen
 import com.docscanner.ui.screens.scanner.ScannerScreen
 import com.docscanner.ui.screens.donate.DonateScreen
 import com.docscanner.ui.screens.settings.SettingsScreen
+import com.docscanner.ui.screens.tags.TagManagementScreen
 import com.docscanner.ui.screens.viewer.PageViewerScreen
 
 object Routes {
@@ -19,6 +20,7 @@ object Routes {
     const val PAGE_VIEWER = "viewer/{documentId}/{pageIndex}"
     const val SETTINGS = "settings"
     const val DONATE = "donate"
+    const val TAGS = "tags"
 
     fun documentDetail(documentId: Long) = "document/$documentId"
     fun pageViewer(documentId: Long, pageIndex: Int) = "viewer/$documentId/$pageIndex"
@@ -87,10 +89,16 @@ fun DocScannerNavGraph(navController: NavHostController) {
             SettingsScreen(
                 onNavigateBack = { navController.popBackStack() },
                 onDonateClick = { navController.navigate(Routes.DONATE) },
+                onTagsClick = { navController.navigate(Routes.TAGS) },
             )
         }
         composable(Routes.DONATE) {
             DonateScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+        composable(Routes.TAGS) {
+            TagManagementScreen(
                 onNavigateBack = { navController.popBackStack() },
             )
         }

@@ -35,7 +35,7 @@ class DocumentRepositoryTest {
             ApplicationProvider.getApplicationContext(),
             DocScannerDatabase::class.java,
         ).allowMainThreadQueries().build()
-        repository = DocumentRepositoryImpl(database.documentDao(), database.pageDao())
+        repository = DocumentRepositoryImpl(database.documentDao(), database.pageDao(), database.tagDao())
     }
 
     @After
@@ -172,5 +172,71 @@ class DocumentRepositoryTest {
         assertEquals(cId, pages[0].id)
         assertEquals(aId, pages[1].id)
         assertEquals(bId, pages[2].id)
+    }
+
+    @Test
+    fun `create tag and observe all tags`() = runTest {
+        val tagId = repository.createTag("Work")
+        assertTrue("Tag ID should be positive", tagId > 0)
+        val tags = repository.observeAllTags().first()
+        assertEquals(1, tags.size)
+        assertEquals("Work", tags[0].name)
+    }
+
+    @Test
+    fun `rename tag updates name`() = runTest {
+        val tagId = repository.createTag("Old")
+        repository.renameTag(tagId, "Renamed")
+        val tags = repository.observeAllTags().first()
+        assertEquals("Renamed", tags[0].name)
+    }
+
+    @Test
+    fun `delete tags removes them`() = runTest {
+        val id1 = repository.createTag("Tag1")
+        val id2 = repository.createTag("Tag2")
+        repository.deleteTags(listOf(id1))
+        val tags = repository.observeAllTags().first()
+        assertEquals(1, tags.size)
+        assertEquals(id2, tags[0].id)
+    }
+
+    @Test
+    fun `set document tags replaces existing tags`() = runTest {
+        val docId = repository.createDocument("Tagged Doc")
+        val tag1 = repository.createTag("Important")
+        val tag2 = repository.createTag("Urgent")
+
+        repository.setDocumentTags(docId, listOf(tag1, tag2))
+        var docTags = repository.observeDocumentTags(docId).first()
+        assertEquals(2, docTags.size)
+
+        repository.setDocumentTags(docId, listOf(tag1))
+        docTags = repository.observeDocumentTags(docId).first()
+        assertEquals(1, docTags.size)
+        assertEquals(tag1, docTags[0].id)
+    }
+
+    @Test
+    fun `set document tags with empty list clears tags`() = runTest {
+        val docId = repository.createDocument("Clear Tags")
+        val tag = repository.createTag("Temp")
+        repository.setDocumentTags(docId, listOf(tag))
+        repository.setDocumentTags(docId, emptyList())
+        val docTags = repository.observeDocumentTags(docId).first()
+        assertTrue(docTags.isEmpty())
+    }
+
+    @Test
+    fun `observeDocumentTagMap returns all document tags`() = runTest {
+        val doc1 = repository.createDocument("Doc1")
+        val doc2 = repository.createDocument("Doc2")
+        val tag1 = repository.createTag("Work")
+        val tag2 = repository.createTag("Personal")
+        repository.setDocumentTags(doc1, listOf(tag1, tag2))
+        repository.setDocumentTags(doc2, listOf(tag1))
+        val map = repository.observeDocumentTagMap().first()
+        assertEquals(2, map[doc1]?.size)
+        assertEquals(1, map[doc2]?.size)
     }
 }

@@ -4,6 +4,7 @@ import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.ui.screens.home.HomeViewModel
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -104,12 +105,15 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `deselect all clears selection`() = runTest {
+    fun `toggleSelectAll selects all then deselects all`() = runTest {
         repo.createDocument("Doc1")
+        repo.createDocument("Doc2")
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         viewModel.onDocumentLongPress(viewModel.uiState.value.documents[0].id)
-        viewModel.deselectAll()
+        viewModel.toggleSelectAll()
+        assertEquals(2, viewModel.uiState.value.selectedDocumentIds.size)
+        viewModel.toggleSelectAll()
         assertTrue(viewModel.uiState.value.selectedDocumentIds.isEmpty())
     }
 
@@ -247,5 +251,50 @@ class HomeViewModelTest {
     fun `search query in ui state tracks current query`() = runTest {
         viewModel.setSearchQuery("test query")
         assertEquals("test query", viewModel.uiState.value.searchQuery)
+    }
+
+    @Test
+    fun `showTagsSheet sets state`() {
+        viewModel.showTagsSheet()
+        assertTrue(viewModel.uiState.value.showTagsSheet)
+    }
+
+    @Test
+    fun `toggleTag adds and removes from selectedTagIds`() {
+        viewModel.toggleTag(1L)
+        assertTrue(1L in viewModel.uiState.value.selectedTagIds)
+        viewModel.toggleTag(1L)
+        assertFalse(1L in viewModel.uiState.value.selectedTagIds)
+    }
+
+    @Test
+    fun `createTagAndSelect creates tag and adds to selected`() = runTest {
+        viewModel.createTagAndSelect("Work")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        val tags = repo.observeAllTags().first()
+        assertEquals(1, tags.size)
+        assertEquals("Work", tags[0].name)
+        val selected = viewModel.uiState.value.selectedTagIds
+        assertEquals(tags[0].id, selected.firstOrNull())
+    }
+
+    @Test
+    fun `applyTagsToSelected sets tags on selected documents`() = runTest {
+        val docId = repo.createDocument("Doc1")
+        repo.createDocument("Doc2")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        val tagId = repo.createTag("Important")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.onDocumentLongPress(docId)
+        viewModel.showTagsSheet()
+        viewModel.toggleTag(tagId)
+        viewModel.applyTagsToSelected()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val docTags = repo.observeDocumentTags(docId).first()
+        assertEquals(1, docTags.size)
+        assertEquals("Important", docTags[0].name)
+        assertFalse(viewModel.uiState.value.showTagsSheet)
     }
 }

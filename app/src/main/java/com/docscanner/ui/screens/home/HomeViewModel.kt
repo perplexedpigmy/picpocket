@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
+import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
@@ -38,6 +39,9 @@ data class HomeUiState(
     val renameText: String = "",
     val searchQuery: String = "",
     val searchInContent: Boolean = false,
+    val showTagsSheet: Boolean = false,
+    val selectedTagIds: Set<Long> = emptySet(),
+    val documentTags: Map<Long, List<Tag>> = emptyMap(),
 )
 
 @HiltViewModel
@@ -55,7 +59,26 @@ class HomeViewModel @Inject constructor(
     private val _debouncedQuery = _searchQuery.debounce(300)
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
+    private val _allTags = repository.observeAllTags()
+    val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyList(),
+    )
+
+    private val _documentTagMap = repository.observeDocumentTagMap().stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5000),
+        emptyMap(),
+    )
+
     init {
+        viewModelScope.launch {
+            _documentTagMap.collect { map ->
+                _uiState.update { it.copy(documentTags = map) }
+            }
+        }
+
         viewModelScope.launch {
             combine(_searchInContent, _debouncedQuery) { a, b -> a to b }
                 .collectLatest { (inContent, query) ->
@@ -165,8 +188,14 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun deselectAll() {
-        _uiState.update { it.copy(selectedDocumentIds = emptySet()) }
+    fun toggleSelectAll() {
+        val state = _uiState.value
+        val allIds = state.documents.map { it.id }.toSet()
+        if (state.selectedDocumentIds.size == allIds.size) {
+            _uiState.update { it.copy(selectedDocumentIds = emptySet()) }
+        } else {
+            _uiState.update { it.copy(selectedDocumentIds = allIds) }
+        }
     }
 
     fun exitSelectionMode() {
@@ -218,6 +247,44 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             repository.updateDocumentName(docId, name)
             hideRenameDialog()
+        }
+    }
+
+    fun showTagsSheet() {
+        _uiState.update { it.copy(showTagsSheet = true, selectedTagIds = emptySet()) }
+    }
+
+    fun hideTagsSheet() {
+        _uiState.update { it.copy(showTagsSheet = false) }
+    }
+
+    fun toggleTag(tagId: Long) {
+        _uiState.update { state ->
+            val newSet = if (tagId in state.selectedTagIds) {
+                state.selectedTagIds - tagId
+            } else {
+                state.selectedTagIds + tagId
+            }
+            state.copy(selectedTagIds = newSet)
+        }
+    }
+
+    fun createTagAndSelect(name: String) {
+        viewModelScope.launch {
+            val tagId = repository.createTag(name)
+            _uiState.update { it.copy(selectedTagIds = it.selectedTagIds + tagId) }
+        }
+    }
+
+    fun applyTagsToSelected() {
+        val docIds = _uiState.value.selectedDocumentIds.toList()
+        val tagIds = _uiState.value.selectedTagIds.toList()
+        if (docIds.isEmpty()) return
+        viewModelScope.launch {
+            for (docId in docIds) {
+                repository.setDocumentTags(docId, tagIds)
+            }
+            _uiState.update { it.copy(showTagsSheet = false) }
         }
     }
 

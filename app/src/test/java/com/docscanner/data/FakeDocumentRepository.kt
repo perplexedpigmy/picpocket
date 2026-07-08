@@ -2,6 +2,7 @@ package com.docscanner.data
 
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Page
+import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,8 +12,12 @@ class FakeDocumentRepository : DocumentRepository {
 
     private val documents = MutableStateFlow<List<Document>>(emptyList())
     private val pages = mutableMapOf<Long, MutableStateFlow<List<Page>>>()
+    private val tags = MutableStateFlow<List<Tag>>(emptyList())
+    private val documentTags = mutableMapOf<Long, MutableStateFlow<List<Tag>>>()
+    private val documentTagMap = MutableStateFlow<Map<Long, List<Tag>>>(emptyMap())
     private var nextDocId = 1L
     private var nextPageId = 1L
+    private var nextTagId = 1L
 
     override fun observeDocuments(): Flow<List<Document>> = documents
 
@@ -113,5 +118,51 @@ class FakeDocumentRepository : DocumentRepository {
             .filter { it.ocrText != null && regex.containsMatchIn(it.ocrText!!) }
             .map { it.documentId }
             .toSet()
+    }
+
+    override fun observeAllTags(): Flow<List<Tag>> = tags
+
+    override fun observeDocumentTags(documentId: Long): Flow<List<Tag>> {
+        return documentTags.getOrPut(documentId) { MutableStateFlow(emptyList()) }
+    }
+
+    override fun observeDocumentTagMap(): Flow<Map<Long, List<Tag>>> = documentTagMap
+
+    override fun searchTags(query: String): Flow<List<Tag>> {
+        return tags.map { list -> list.filter { it.name.contains(query, ignoreCase = true) } }
+    }
+
+    override suspend fun createTag(name: String): Long {
+        val id = nextTagId++
+        val color = ((tags.value.size) % 8)
+        val tag = Tag(id, name, color)
+        tags.value = tags.value + tag
+        return id
+    }
+
+    override suspend fun renameTag(tagId: Long, name: String) {
+        tags.value = tags.value.map { if (it.id == tagId) it.copy(name = name) else it }
+    }
+
+    override suspend fun deleteTags(tagIds: List<Long>) {
+        tags.value = tags.value.filter { it.id !in tagIds }
+        for ((_, state) in documentTags) {
+            state.value = state.value.filter { it.id !in tagIds }
+        }
+        val map = mutableMapOf<Long, List<Tag>>()
+        for ((id, state) in documentTags) {
+            map[id] = state.value
+        }
+        documentTagMap.value = map
+    }
+
+    override suspend fun setDocumentTags(documentId: Long, tagIds: List<Long>) {
+        val selected = tags.value.filter { it.id in tagIds }
+        documentTags.getOrPut(documentId) { MutableStateFlow(emptyList()) }.value = selected
+        val map = mutableMapOf<Long, List<Tag>>()
+        for ((id, state) in documentTags) {
+            map[id] = state.value
+        }
+        documentTagMap.value = map
     }
 }

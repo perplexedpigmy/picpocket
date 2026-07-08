@@ -128,6 +128,19 @@ val RoyalLight = lightColorScheme(
     onError = Color.White,
 )
 
+// ── Tag Colors ──
+
+val TagColors = listOf(
+    Color(0xFFE53935), // Red
+    Color(0xFFFB8C00), // Orange
+    Color(0xFFFDD835), // Yellow
+    Color(0xFF43A047), // Green
+    Color(0xFF00ACC1), // Cyan
+    Color(0xFF1E88E5), // Blue
+    Color(0xFF5E35B1), // Purple
+    Color(0xFFD81B60), // Pink
+)
+
 val RoyalDark = darkColorScheme(
     primary = Blue300,
     secondary = Amber200,

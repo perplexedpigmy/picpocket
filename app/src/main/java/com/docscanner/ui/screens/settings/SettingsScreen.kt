@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,6 +56,7 @@ import com.docscanner.ui.theme.Palette
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
     onDonateClick: () -> Unit = {},
+    onTagsClick: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -228,6 +230,38 @@ fun SettingsScreen(
                     OutlinedButton(onClick = { folderPickerLauncher.launch(null) }) {
                         Icon(Icons.Default.Folder, contentDescription = null)
                         Text("  Change Folder")
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onTagsClick),
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Label,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Manage Tags",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "Create, rename, or delete tags",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

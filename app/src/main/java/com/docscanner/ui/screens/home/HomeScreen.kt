@@ -3,6 +3,7 @@ package com.docscanner.ui.screens.home
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -25,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.TextSnippet
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
@@ -61,6 +64,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Document
+import com.docscanner.data.model.Tag
+import com.docscanner.ui.components.TagSelectorSheet
+import com.docscanner.ui.theme.TagColors
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -77,6 +83,7 @@ fun HomeScreen(
 
     var showSortMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val allTags by viewModel.allTags.collectAsState()
 
     Scaffold(
         topBar = {
@@ -92,18 +99,20 @@ fun HomeScreen(
                 },
                 actions = {
                     if (state.selectionMode) {
-                        IconButton(onClick = { viewModel.selectAll() }) {
-                            Icon(Icons.Default.SelectAll, contentDescription = "Select all")
-                        }
-                        if (state.selectedDocumentIds.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.deselectAll() }) {
-                                Icon(Icons.Default.TabUnselected, contentDescription = "Deselect all")
-                            }
+                        val allSelected = state.selectedDocumentIds.size == state.documents.size
+                        IconButton(onClick = { viewModel.toggleSelectAll() }) {
+                            Icon(
+                                if (allSelected) Icons.Default.TabUnselected else Icons.Default.SelectAll,
+                                contentDescription = if (allSelected) "Deselect all" else "Select all",
+                            )
                         }
                         if (state.selectedDocumentIds.size == 1) {
                             IconButton(onClick = { viewModel.showRenameDialog() }) {
                                 Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename")
                             }
+                        }
+                        IconButton(onClick = { viewModel.showTagsSheet() }) {
+                            Icon(Icons.AutoMirrored.Filled.Label, contentDescription = "Add tags")
                         }
                         IconButton(onClick = { viewModel.shareSelected(context) }) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
@@ -241,6 +250,7 @@ fun HomeScreen(
                     items(state.documents, key = { it.id }) { document ->
                         DocumentCard(
                             document = document,
+                            tags = state.documentTags[document.id].orEmpty(),
                             isSelected = document.id in state.selectedDocumentIds,
                             selectionMode = state.selectionMode,
                             onClick = {
@@ -276,6 +286,17 @@ fun HomeScreen(
         )
     }
 
+    if (state.showTagsSheet) {
+        TagSelectorSheet(
+            allTags = allTags,
+            selectedTagIds = state.selectedTagIds,
+            onToggleTag = { viewModel.toggleTag(it) },
+            onCreateTag = { viewModel.createTagAndSelect(it) },
+            onDone = { viewModel.applyTagsToSelected() },
+            onDismiss = { viewModel.hideTagsSheet() },
+        )
+    }
+
     if (state.showRenameDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.hideRenameDialog() },
@@ -307,6 +328,7 @@ fun HomeScreen(
 @Composable
 private fun DocumentCard(
     document: Document,
+    tags: List<Tag>,
     isSelected: Boolean,
     selectionMode: Boolean,
     onClick: () -> Unit,
@@ -362,6 +384,33 @@ private fun DocumentCard(
                     text = formatDate(document.updatedAt),
                     style = MaterialTheme.typography.labelSmall,
                 )
+                if (tags.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        tags.take(3).forEach { tag ->
+                            val dotColor = TagColors.getOrElse(tag.colorIndex) { TagColors[0] }
+                            Box(
+                                modifier = Modifier
+                                    .background(dotColor.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            ) {
+                                Text(
+                                    text = tag.name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = dotColor,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                        if (tags.size > 3) {
+                            Text(
+                                text = "+${tags.size - 3}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
