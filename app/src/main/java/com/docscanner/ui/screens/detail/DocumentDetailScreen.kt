@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,9 +40,12 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -57,6 +61,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -64,6 +69,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Page
+import com.docscanner.ui.components.ShareOptionsSheet
 import com.docscanner.ui.components.TagSelectorSheet
 import com.docscanner.ui.theme.TagColors
 import java.io.File
@@ -104,11 +110,45 @@ fun DocumentDetailScreen(
                             contentDescription = if (state.isEditMode) "Done editing" else "Edit",
                         )
                     }
-                    IconButton(onClick = { viewModel.showRenameDialog() }) {
-                        Icon(Icons.Default.DriveFileRenameOutline, contentDescription = "Rename")
-                    }
-                    IconButton(onClick = { viewModel.showDeleteConfirmation() }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete document")
+                    Box {
+                        IconButton(onClick = { viewModel.toggleOverflowMenu() }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = state.showOverflowMenu,
+                            onDismissRequest = { viewModel.hideOverflowMenu() },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                onClick = {
+                                    viewModel.hideOverflowMenu()
+                                    viewModel.showRenameDialog()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.DriveFileRenameOutline, contentDescription = null)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Share") },
+                                onClick = {
+                                    viewModel.hideOverflowMenu()
+                                    viewModel.showShareSheet()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Share, contentDescription = null)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete") },
+                                onClick = {
+                                    viewModel.hideOverflowMenu()
+                                    viewModel.showDeleteConfirmation()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Delete, contentDescription = null)
+                                },
+                            )
+                        }
                     }
                 },
             )
@@ -302,6 +342,21 @@ fun DocumentDetailScreen(
             onCreateTag = { viewModel.createTagAndSelect(it) },
             onDone = { viewModel.applyTags() },
             onDismiss = { viewModel.hideTagsSheet() },
+        )
+    }
+
+    if (state.showShareSheet) {
+        val ctx = LocalContext.current
+        ShareOptionsSheet(
+            onDismiss = { viewModel.hideShareSheet() },
+            onShareVia = {
+                viewModel.hideShareSheet()
+                viewModel.shareViaSystem(ctx)
+            },
+            onSaveToDrive = { uri ->
+                viewModel.hideShareSheet()
+                viewModel.saveToDrive(uri)
+            },
         )
     }
 }

@@ -64,7 +64,9 @@ data class ScannerUiState(
     val pageSize: PageSize = PageSize.A4,
     val showTagsDialog: Boolean = false,
     val showOverwriteDialog: Boolean = false,
+    val showDiscardDialog: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
+    val autoCorrectEnabled: Boolean = true,
 )
 
 @HiltViewModel
@@ -99,9 +101,11 @@ class ScannerViewModel @Inject constructor(
         val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmm")
         val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
         val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
+        val autoCorrect = prefs.getBoolean("auto_correct_pdf_name", true)
         _uiState.update { it.copy(
             documentName = "Scan_${now.format(formatter)}",
             pageSize = pageSize,
+            autoCorrectEnabled = autoCorrect,
         ) }
     }
 
@@ -212,8 +216,22 @@ class ScannerViewModel @Inject constructor(
         _uiState.update { it.copy(showNameDialog = false) }
     }
 
+    fun showDiscardDialog() {
+        _uiState.update { it.copy(showDiscardDialog = true) }
+    }
+
+    fun hideDiscardDialog() {
+        _uiState.update { it.copy(showDiscardDialog = false) }
+    }
+
     fun updateDocumentName(name: String) {
         _uiState.update { it.copy(documentName = name) }
+    }
+
+    fun toggleAutoCorrect() {
+        val new = !_uiState.value.autoCorrectEnabled
+        prefs.edit().putBoolean("auto_correct_pdf_name", new).apply()
+        _uiState.update { it.copy(autoCorrectEnabled = new) }
     }
 
     fun showFilterSheet(pageIndex: Int) {

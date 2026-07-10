@@ -1,13 +1,18 @@
 package com.docscanner.ui.screens.home
 
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.ui.components.MatchMode
+import com.docscanner.util.ZipUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +25,9 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 enum class SortOrder(val label: String) {
@@ -46,6 +54,8 @@ data class HomeUiState(
     val showTagFilterSheet: Boolean = false,
     val filterTagIds: Set<Long> = emptySet(),
     val filterMatchMode: MatchMode = MatchMode.MATCH_ANY,
+    val showShareSheet: Boolean = false,
+    val shareFilteredDocs: Boolean = false,
 )
 
 @HiltViewModel
@@ -339,21 +349,141 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(filterMatchMode = mode) }
     }
 
-    fun shareSelected(context: Context) {
-        val uris = _uiState.value.selectedDocumentIds.mapNotNull { id ->
-            _uiState.value.documents.find { it.id == id }?.outputUri
-        }.mapNotNull { uri ->
-            try {
-                android.net.Uri.parse(uri)
-            } catch (_: Exception) { null }
-        }
-        if (uris.isEmpty()) return
+    fun showShareSheet() {
+        _uiState.update { it.copy(showShareSheet = true, shareFilteredDocs = false) }
+    }
 
-        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+    fun showFilteredShareSheet() {
+        _uiState.update { it.copy(showShareSheet = true, shareFilteredDocs = true) }
+    }
+
+    fun hideShareSheet() {
+        _uiState.update { it.copy(showShareSheet = false, shareFilteredDocs = false) }
+    }
+
+    fun shareViaSystem(context: Context) {
+        val docs = getDocsToShare()
+        if (docs.isEmpty()) return
+        val contentResolver = context.contentResolver
+
+        if (docs.size == 1) {
+            shareSingleDoc(context, docs.first())
+        } else {
+            shareMultipleDocs(context, docs, contentResolver)
+        }
+        if (!_uiState.value.shareFilteredDocs) exitSelectionMode()
+    }
+
+    fun saveToDrive(context: Context, folderUri: Uri) {
+        val docs = getDocsToShare()
+        if (docs.isEmpty()) return
+        val app = context.applicationContext
+
+        if (docs.size == 1) {
+            copyToDrive(app, folderUri, docs.first())
+        } else {
+            copyMultipleToDrive(app, folderUri, docs)
+        }
+        if (!_uiState.value.shareFilteredDocs) exitSelectionMode()
+    }
+
+    private fun getDocsToShare(): List<Document> {
+        val state = _uiState.value
+        val ids = if (state.shareFilteredDocs) {
+            state.documents.map { it.id }
+        } else {
+            state.selectedDocumentIds.toList()
+        }
+        return ids.mapNotNull { id ->
+            state.documents.find { it.id == id }
+        }.filter { it.outputUri != null }
+    }
+
+    private fun shareableUri(context: Context, uriStr: String): Uri {
+        val uri = Uri.parse(uriStr)
+        if (uri.scheme == "file") {
+            val file = File(uri.path!!)
+            return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }
+        return uri
+    }
+
+    private fun shareSingleDoc(context: Context, doc: Document) {
+        val uri = shareableUri(context, doc.outputUri!!)
+        val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
-            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "Share PDF(s)"))
+        context.startActivity(Intent.createChooser(intent, "Share PDF"))
+    }
+
+    private fun shareMultipleDocs(context: Context, docs: List<Document>, contentResolver: ContentResolver) {
+        val baseName = zipBaseName()
+        val files = docs.map { doc ->
+            val name = doc.name.replace(" ", "_") + ".pdf"
+            val uri = shareableUri(context, doc.outputUri!!)
+            name to uri
+        }
+        val cacheDir = context.cacheDir
+        val zipFile = ZipUtil.create(cacheDir, baseName, files, contentResolver)
+        val zipUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", zipFile)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, zipUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share ZIP"))
+        zipFile.delete()
+    }
+
+    private fun copyToDrive(app: Context, folderUri: Uri, doc: Document) {
+        try {
+            val folder = DocumentFile.fromTreeUri(app, folderUri)
+            if (folder == null || !folder.exists()) return
+            val sourceUri = shareableUri(app, doc.outputUri!!)
+            val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
+            val existing = folder.findFile(safeName)
+            if (existing != null) existing.delete()
+            val newFile = folder.createFile("application/pdf", safeName) ?: return
+            app.contentResolver.openInputStream(sourceUri)?.use { input ->
+                app.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                    input.copyTo(output)
+                }
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun copyMultipleToDrive(app: Context, folderUri: Uri, docs: List<Document>) {
+        try {
+            val parent = DocumentFile.fromTreeUri(app, folderUri) ?: return
+            val dirName = zipBaseName()
+            val dir = parent.createDirectory(dirName) ?: return
+            for (doc in docs) {
+                val sourceUri = shareableUri(app, doc.outputUri!!)
+                val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
+                val newFile = dir.createFile("application/pdf", safeName) ?: continue
+                app.contentResolver.openInputStream(sourceUri)?.use { input ->
+                    app.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun zipBaseName(): String {
+        val filterIds = _uiState.value.filterTagIds
+        if (filterIds.isNotEmpty()) {
+            val names = filterIds.mapNotNull { id ->
+                allTags.value.find { it.id == id }?.name?.replace(" ", "_")
+            }
+            if (names.isNotEmpty()) {
+                val delimiter = if (_uiState.value.filterMatchMode == MatchMode.MATCH_ANY) "+" else "-"
+                return names.joinToString(delimiter)
+            }
+        }
+        val now = LocalDateTime.now()
+        return now.format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
     }
 }

@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +49,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -121,12 +123,25 @@ fun ScannerScreen(
 
     var showPageSizeMenu by remember { mutableStateOf(false) }
 
+    val hasPages = state.capturedPages.isNotEmpty() && !state.isAppendMode
+    val dialogShowing = state.showNameDialog || state.showFilterSheet || state.showTagsDialog || state.showOverwriteDialog || state.showDiscardDialog
+
+    BackHandler(enabled = hasPages && !dialogShowing) {
+        viewModel.showDiscardDialog()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(if (state.isAppendMode) "Add Pages" else "Scan Document") },
                 navigationIcon = {
-                    IconButton(onClick = { onNavigateBack() }) {
+                    IconButton(onClick = {
+                        if (hasPages && !dialogShowing) {
+                            viewModel.showDiscardDialog()
+                        } else {
+                            onNavigateBack()
+                        }
+                    }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -331,20 +346,37 @@ fun ScannerScreen(
             onDismissRequest = { viewModel.hideNameDialog() },
             title = { Text("Name your document") },
             text = {
-                OutlinedTextField(
-                    value = state.documentName,
-                    onValueChange = { viewModel.updateDocumentName(it) },
-                    label = { Text("Document name") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(
-                        onDone = {
-                            viewModel.hideNameDialog()
-                            viewModel.confirmNameAndSave()
-                        }
-                    ),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Column {
+                    OutlinedTextField(
+                        value = state.documentName,
+                        onValueChange = { viewModel.updateDocumentName(it) },
+                        label = { Text("Document name") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = ImeAction.Done,
+                            autoCorrectEnabled = state.autoCorrectEnabled,
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                viewModel.hideNameDialog()
+                                viewModel.confirmNameAndSave()
+                            }
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Auto-correct", style = MaterialTheme.typography.bodySmall)
+                        Switch(
+                            checked = state.autoCorrectEnabled,
+                            onCheckedChange = { viewModel.toggleAutoCorrect() },
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
@@ -380,6 +412,24 @@ fun ScannerScreen(
             dismissButton = {
                 TextButton(onClick = { viewModel.cancelOverwrite() }) {
                     Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (state.showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.hideDiscardDialog() },
+            title = { Text("Discard scanned pages?") },
+            text = { Text("You have scanned pages that have not been saved. Going back will discard them.") },
+            confirmButton = {
+                TextButton(onClick = { onNavigateBack() }) {
+                    Text("Discard")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.hideDiscardDialog() }) {
+                    Text("Keep editing")
                 }
             },
         )

@@ -356,4 +356,38 @@ class HomeViewModelTest {
         assertEquals(1, viewModel.uiState.value.documents.size)
         assertEquals("All Tags Doc", viewModel.uiState.value.documents[0].name)
     }
+
+    @Test
+    fun `shareFilteredDocs defaults to false`() {
+        assertFalse(viewModel.uiState.value.shareFilteredDocs)
+        assertFalse(viewModel.uiState.value.showShareSheet)
+    }
+
+    @Test
+    fun `showFilteredShareSheet sets both flags`() {
+        viewModel.showFilteredShareSheet()
+        assertTrue(viewModel.uiState.value.showShareSheet)
+        assertTrue(viewModel.uiState.value.shareFilteredDocs)
+    }
+
+    @Test
+    fun `showShareSheet resets shareFilteredDocs`() {
+        viewModel.showFilteredShareSheet()
+        assertTrue(viewModel.uiState.value.shareFilteredDocs)
+
+        viewModel.showShareSheet()
+        assertTrue(viewModel.uiState.value.showShareSheet)
+        assertFalse(viewModel.uiState.value.shareFilteredDocs)
+    }
+
+    @Test
+    fun `hideShareSheet resets both flags`() {
+        viewModel.showFilteredShareSheet()
+        assertTrue(viewModel.uiState.value.showShareSheet)
+        assertTrue(viewModel.uiState.value.shareFilteredDocs)
+
+        viewModel.hideShareSheet()
+        assertFalse(viewModel.uiState.value.showShareSheet)
+        assertFalse(viewModel.uiState.value.shareFilteredDocs)
+    }
 }

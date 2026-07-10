@@ -271,4 +271,36 @@ class ScannerViewModelTest {
         viewModel.setPageSize(PageSize.A5)
         assertEquals(PageSize.A5, viewModel.uiState.value.pageSize)
     }
+
+    @Test
+    fun `autoCorrectEnabled defaults to true`() {
+        assertTrue(viewModel.uiState.value.autoCorrectEnabled)
+    }
+
+    @Test
+    fun `toggleAutoCorrect flips and persists`() {
+        viewModel.toggleAutoCorrect()
+        assertFalse(viewModel.uiState.value.autoCorrectEnabled)
+        val prefs = RuntimeEnvironment.getApplication()
+            .getSharedPreferences("settings", 0)
+        assertFalse("should persist to prefs", prefs.getBoolean("auto_correct_pdf_name", true))
+
+        viewModel.toggleAutoCorrect()
+        assertTrue(viewModel.uiState.value.autoCorrectEnabled)
+        assertTrue("should persist to prefs", prefs.getBoolean("auto_correct_pdf_name", false))
+    }
+
+    @Test
+    fun `showDiscardDialog sets state`() {
+        assertFalse(viewModel.uiState.value.showDiscardDialog)
+        viewModel.showDiscardDialog()
+        assertTrue(viewModel.uiState.value.showDiscardDialog)
+    }
+
+    @Test
+    fun `hideDiscardDialog clears state`() {
+        viewModel.showDiscardDialog()
+        viewModel.hideDiscardDialog()
+        assertFalse(viewModel.uiState.value.showDiscardDialog)
+    }
 }

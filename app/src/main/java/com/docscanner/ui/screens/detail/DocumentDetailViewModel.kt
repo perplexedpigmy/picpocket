@@ -1,7 +1,11 @@
 package com.docscanner.ui.screens.detail
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
@@ -20,6 +24,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 
 data class DetailUiState(
@@ -34,6 +39,8 @@ data class DetailUiState(
     val showTagsSheet: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
     val documentTags: List<Tag> = emptyList(),
+    val showOverflowMenu: Boolean = false,
+    val showShareSheet: Boolean = false,
 )
 
 @HiltViewModel
@@ -222,5 +229,58 @@ class DocumentDetailViewModel @Inject constructor(
         viewModelScope.launch {
             repository.reorderPages(docId, pageIds)
         }
+    }
+
+    fun toggleOverflowMenu() {
+        _uiState.update { it.copy(showOverflowMenu = !it.showOverflowMenu) }
+    }
+
+    fun hideOverflowMenu() {
+        _uiState.update { it.copy(showOverflowMenu = false) }
+    }
+
+    fun showShareSheet() {
+        _uiState.update { it.copy(showShareSheet = true) }
+    }
+
+    fun hideShareSheet() {
+        _uiState.update { it.copy(showShareSheet = false) }
+    }
+
+    fun shareViaSystem(context: Context) {
+        val doc = _uiState.value.document ?: return
+        val uriStr = doc.outputUri ?: return
+        val uri = Uri.parse(uriStr)
+        val shareUri = if (uri.scheme == "file") {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(uri.path!!))
+        } else uri
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, shareUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share PDF"))
+    }
+
+    fun saveToDrive(folderUri: Uri) {
+        val doc = _uiState.value.document ?: return
+        val uriStr = doc.outputUri ?: return
+        try {
+            val app = getApplication<Application>()
+            val folder = DocumentFile.fromTreeUri(app, folderUri) ?: return
+            val sourceUri = Uri.parse(uriStr)
+            val shareUri = if (sourceUri.scheme == "file") {
+                FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", File(sourceUri.path!!))
+            } else sourceUri
+            val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
+            val existing = folder.findFile(safeName)
+            if (existing != null) existing.delete()
+            val newFile = folder.createFile("application/pdf", safeName) ?: return
+            app.contentResolver.openInputStream(shareUri)?.use { input ->
+                app.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                    input.copyTo(output)
+                }
+            }
+        } catch (_: Exception) { }
     }
 }

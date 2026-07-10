@@ -68,6 +68,7 @@ import androidx.compose.foundation.layout.FlowRow
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Tag
 import com.docscanner.ui.components.MatchMode
+import com.docscanner.ui.components.ShareOptionsSheet
 import com.docscanner.ui.components.TagChip
 import com.docscanner.ui.components.TagSelectorSheet
 import com.docscanner.ui.theme.TagColors
@@ -118,7 +119,7 @@ fun HomeScreen(
                         IconButton(onClick = { viewModel.showTagsSheet() }) {
                             Icon(Icons.AutoMirrored.Filled.Label, contentDescription = "Add tags")
                         }
-                        IconButton(onClick = { viewModel.shareSelected(context) }) {
+                        IconButton(onClick = { viewModel.showShareSheet() }) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
                         }
                         IconButton(onClick = { viewModel.showDeleteConfirmation() }) {
@@ -153,6 +154,11 @@ fun HomeScreen(
                                         },
                                     )
                                 }
+                            }
+                        }
+                        if (state.filterTagIds.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.showFilteredShareSheet() }) {
+                                Icon(Icons.Default.Share, contentDescription = "Share filtered")
                             }
                         }
                         IconButton(onClick = onSettingsClick) {
@@ -369,6 +375,20 @@ fun HomeScreen(
                 TextButton(onClick = { viewModel.hideRenameDialog() }) {
                     Text("Cancel")
                 }
+            },
+        )
+    }
+
+    if (state.showShareSheet) {
+        ShareOptionsSheet(
+            onDismiss = { viewModel.hideShareSheet() },
+            onShareVia = {
+                viewModel.shareViaSystem(context)
+                viewModel.hideShareSheet()
+            },
+            onSaveToDrive = { uri ->
+                viewModel.saveToDrive(context, uri)
+                viewModel.hideShareSheet()
             },
         )
     }
