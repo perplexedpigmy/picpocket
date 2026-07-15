@@ -1,5 +1,6 @@
 package com.docscanner.ui
 
+import androidx.test.core.app.ApplicationProvider
 import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.ui.screens.viewer.PageViewerViewModel
 import com.docscanner.util.MainCoroutineRule
@@ -31,7 +32,7 @@ class PageViewerViewModelTest {
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         repo.addPage(documentId, "content://page3.jpg")
-        viewModel = PageViewerViewModel(repo)
+        viewModel = PageViewerViewModel(ApplicationProvider.getApplicationContext(), repo)
     }
 
     @Test

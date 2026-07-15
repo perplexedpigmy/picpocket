@@ -46,7 +46,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.Page
-import java.io.File
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -141,10 +140,12 @@ fun PageViewerScreen(
 @Composable
 private fun ZoomablePage(page: Page) {
     val bitmap = remember(page.imageUri) {
-        try {
-            val file = File(Uri.parse(page.imageUri).path!!)
-            BitmapFactory.decodeFile(file.absolutePath)
-        } catch (_: Exception) { null }
+        val path = Uri.parse(page.imageUri).path
+        if (path != null) {
+            try {
+                BitmapFactory.decodeFile(path)
+            } catch (_: Exception) { null }
+        } else null
     }
 
     if (bitmap == null) {

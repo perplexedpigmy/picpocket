@@ -75,6 +75,14 @@ class FakeDocumentRepository : DocumentRepository {
         }
     }
 
+    override suspend fun updatePageImageUri(pageId: Long, imageUri: String) {
+        for ((_, state) in pages) {
+            state.value = state.value.map {
+                if (it.id == pageId) it.copy(imageUri = imageUri) else it
+            }
+        }
+    }
+
     override suspend fun updateDocumentName(documentId: Long, name: String) {
         documents.value = documents.value.map {
             if (it.id == documentId) it.copy(name = name) else it
@@ -90,6 +98,10 @@ class FakeDocumentRepository : DocumentRepository {
 
     override suspend fun getDocumentsByName(name: String): List<Document> {
         return documents.value.filter { it.name == name }
+    }
+
+    override suspend fun getAllDocuments(): List<Document> {
+        return documents.value
     }
 
     override suspend fun deleteDocumentsByName(name: String) {

@@ -2,6 +2,7 @@ package com.docscanner.ui
 
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.domain.pdf.PageSize
 import com.docscanner.ui.screens.settings.SettingsViewModel
 import com.docscanner.ui.theme.DarkMode
@@ -28,13 +29,16 @@ class SettingsViewModelTest {
 
     private lateinit var viewModel: SettingsViewModel
     private lateinit var themeManager: ThemeManager
+    private lateinit var repository: FakeDocumentRepository
 
     @Before
     fun setUp() {
         themeManager = ThemeManager(ApplicationProvider.getApplicationContext())
+        repository = FakeDocumentRepository()
         viewModel = SettingsViewModel(
             ApplicationProvider.getApplicationContext(),
             themeManager,
+            repository,
         )
     }
 

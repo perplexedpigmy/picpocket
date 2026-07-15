@@ -1,9 +1,14 @@
 package com.docscanner.ui
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
 import com.docscanner.data.FakeDocumentRepository
+import com.docscanner.data.model.Page
 import com.docscanner.domain.pdf.FakePdfGenerator
+import com.docscanner.domain.pdf.PdfPageRenderer
 import com.docscanner.ui.screens.detail.DocumentDetailViewModel
+import java.io.File
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -39,10 +44,20 @@ class DocumentDetailViewModelTest {
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         repo.updateDocumentOutputUri(documentId, "file:///test/output.pdf")
+        val fakePageRenderer = object : PdfPageRenderer() {
+            override suspend fun renderAllPages(
+                context: Context,
+                pdfUri: Uri,
+                pages: List<Page>,
+                destDir: File,
+                onPageRendered: suspend (Long, String) -> Unit,
+            ) { }
+        }
         viewModel = DocumentDetailViewModel(
             RuntimeEnvironment.getApplication() as Application,
             repo,
             fakePdf,
+            fakePageRenderer,
         )
     }
 

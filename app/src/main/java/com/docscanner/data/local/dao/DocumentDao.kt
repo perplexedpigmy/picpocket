@@ -58,6 +58,9 @@ interface DocumentDao {
     @Query("SELECT * FROM documents WHERE id = :id")
     fun observeById(id: Long): Flow<DocumentEntity?>
 
+    @Query("SELECT * FROM documents")
+    suspend fun getAll(): List<DocumentEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(document: DocumentEntity): Long
 

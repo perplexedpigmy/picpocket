@@ -65,6 +65,7 @@ data class ScannerUiState(
     val showTagsDialog: Boolean = false,
     val showOverwriteDialog: Boolean = false,
     val showDiscardDialog: Boolean = false,
+    val showSaveFolderPicker: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
     val autoCorrectEnabled: Boolean = true,
 )
@@ -209,7 +210,21 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun showNameDialog() {
-        _uiState.update { it.copy(showNameDialog = true) }
+        val hasSaveUri = prefs.getString("default_save_uri", null) != null
+        if (hasSaveUri) {
+            _uiState.update { it.copy(showNameDialog = true) }
+        } else {
+            _uiState.update { it.copy(showSaveFolderPicker = true) }
+        }
+    }
+
+    fun hideSaveFolderPicker() {
+        _uiState.update { it.copy(showSaveFolderPicker = false) }
+    }
+
+    fun onSaveFolderPicked(uri: Uri) {
+        prefs.edit().putString("default_save_uri", uri.toString()).apply()
+        _uiState.update { it.copy(showSaveFolderPicker = false, showNameDialog = true) }
     }
 
     fun hideNameDialog() {
@@ -254,19 +269,16 @@ class ScannerViewModel @Inject constructor(
         val pagesDir = File(app.cacheDir, "pages/$documentId")
         pagesDir.mkdirs()
 
-        val existingPages = repository.getPages(documentId)
-        val nextPageIndex = existingPages.size
-
         val bitmap = app.contentResolver.openInputStream(captured.imageUri)?.use { stream ->
             BitmapFactory.decodeStream(stream)
         } ?: return
 
-        val pageFile = File(pagesDir, "page_${nextPageIndex}.jpg")
+        val pageId = repository.addPage(documentId, "", fileSizeBytes = 0)
+        val pageFile = File(pagesDir, "$pageId.jpg")
         FileOutputStream(pageFile).use { out ->
             bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
         }
-        val imageUri = Uri.fromFile(pageFile).toString()
-        val pageId = repository.addPage(documentId, imageUri, fileSizeBytes = pageFile.length())
+        repository.updatePageImageUri(pageId, Uri.fromFile(pageFile).toString())
 
         val filteredBitmap = filterPipeline.apply(captured.filterTypes, bitmap)
         val ocrResult = ocrEngine.recognize(filteredBitmap)
@@ -342,12 +354,10 @@ class ScannerViewModel @Inject constructor(
         val docName = state.documentName
         val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
 
-        val fileExists = if (defaultSaveUri != null) {
-            val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
-            dir?.findFile("${docName.replace(" ", "_")}.pdf")?.exists() == true
-        } else {
-            File(app.cacheDir, "$docName.pdf").exists()
-        }
+        if (defaultSaveUri == null) return
+
+        val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
+        val fileExists = dir?.findFile("${docName.replace(" ", "_")}.pdf")?.exists() == true
 
         if (fileExists) {
             _uiState.update { it.copy(showOverwriteDialog = true) }
@@ -392,17 +402,17 @@ class ScannerViewModel @Inject constructor(
                 val pagesDir = File(app.cacheDir, "pages/$documentId")
                 pagesDir.mkdirs()
 
-                for ((i, captured) in state.capturedPages.withIndex()) {
+                for (captured in state.capturedPages) {
                     val bitmap = app.contentResolver.openInputStream(captured.imageUri)?.use { stream ->
                         BitmapFactory.decodeStream(stream)
                     } ?: continue
 
-                    val pageFile = File(pagesDir, "page_$i.jpg")
+                    val pageId = repository.addPage(documentId, "", fileSizeBytes = 0)
+                    val pageFile = File(pagesDir, "$pageId.jpg")
                     FileOutputStream(pageFile).use { out ->
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
                     }
-                    val imageUri = Uri.fromFile(pageFile).toString()
-                    val pageId = repository.addPage(documentId, imageUri, fileSizeBytes = pageFile.length())
+                    repository.updatePageImageUri(pageId, Uri.fromFile(pageFile).toString())
 
                     val filteredBitmap = filterPipeline.apply(captured.filterTypes, bitmap)
                     val ocrResult = ocrEngine.recognize(filteredBitmap)
@@ -415,6 +425,7 @@ class ScannerViewModel @Inject constructor(
                 val pageSize = _uiState.value.pageSize
                 val outputUri = resolveOutputUri(app, state.documentName)
                 val pdfResult = searchablePdf.generate(app, pages, outputUri, pageSize)
+
                 when (pdfResult) {
                     is PdfResult.Success -> {
                         repository.updateDocumentOutputUri(documentId, pdfResult.uri)
@@ -449,11 +460,13 @@ class ScannerViewModel @Inject constructor(
 
     private fun resolveOutputUri(app: Application, docName: String): Uri {
         val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
-        if (defaultSaveUri != null) {
-            val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
-            val pdfFile = dir?.createFile("application/pdf", docName.replace(" ", "_"))
-            if (pdfFile != null) return pdfFile.uri
+            ?: error("default_save_uri must be set before saving")
+        val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
+        if (dir != null) {
+            return dir.createFile("application/pdf", docName.replace(" ", "_"))?.uri
+                ?: error("Failed to create file in save directory")
         }
-        return Uri.fromFile(File(app.cacheDir, "${docName}.pdf"))
+        val file = File(app.cacheDir, "${docName.replace(" ", "_")}.pdf")
+        return Uri.fromFile(file)
     }
 }

@@ -1,5 +1,8 @@
 package com.docscanner.data.repository
 
+import android.app.Application
+import android.net.Uri
+import android.provider.DocumentsContract
 import com.docscanner.data.local.dao.DocumentDao
 import com.docscanner.data.local.dao.DocumentStats
 import com.docscanner.data.local.dao.DocumentTagRow
@@ -21,11 +24,13 @@ import com.docscanner.data.model.TagAutomation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class DocumentRepositoryImpl @Inject constructor(
+    private val app: Application,
     private val documentDao: DocumentDao,
     private val pageDao: PageDao,
     private val tagDao: TagDao,
@@ -64,11 +69,14 @@ class DocumentRepositoryImpl @Inject constructor(
         return documentDao.findByName(name).map { it.toDomain() }
     }
 
+    override suspend fun getAllDocuments(): List<Document> {
+        return documentDao.getAll().map { it.toDomain() }
+    }
+
     override suspend fun deleteDocumentsByName(name: String) {
         val docs = documentDao.findByName(name)
-        if (docs.isNotEmpty()) {
-            documentDao.deleteByIds(docs.map { it.id })
-        }
+        for (doc in docs) deleteDocumentFiles(doc)
+        documentDao.deleteByIds(docs.map { it.id })
     }
 
     override suspend fun createDocument(name: String): Long {
@@ -101,6 +109,11 @@ class DocumentRepositoryImpl @Inject constructor(
         pageDao.update(page.copy(ocrText = ocrText))
     }
 
+    override suspend fun updatePageImageUri(pageId: Long, imageUri: String) {
+        val page = pageDao.getById(pageId) ?: return
+        pageDao.update(page.copy(imageUri = imageUri))
+    }
+
     override suspend fun updateDocumentName(documentId: Long, name: String) {
         documentDao.updateName(documentId, name)
     }
@@ -110,11 +123,15 @@ class DocumentRepositoryImpl @Inject constructor(
     }
 
     override suspend fun deleteDocuments(documentIds: List<Long>) {
+        for (id in documentIds) {
+            val doc = documentDao.getById(id)
+            if (doc != null) deleteDocumentFiles(doc)
+        }
         documentDao.deleteByIds(documentIds)
     }
 
     override suspend fun deleteDocument(documentId: Long) {
-        documentDao.deleteByIds(listOf(documentId))
+        deleteDocuments(listOf(documentId))
     }
 
     override suspend fun deletePage(pageId: Long) {
@@ -238,5 +255,19 @@ class DocumentRepositoryImpl @Inject constructor(
             name = name,
             colorIndex = colorIndex,
         )
+    }
+
+    private fun deleteDocumentFiles(doc: DocumentEntity) {
+        doc.outputUri?.let { uriStr ->
+            try {
+                val uri = Uri.parse(uriStr)
+                when (uri.scheme) {
+                    "content" -> DocumentsContract.deleteDocument(app.contentResolver, uri)
+                    "file" -> File(uri.path!!).delete()
+                    else -> {}
+                }
+            } catch (_: Exception) { }
+        }
+        File(app.cacheDir, "pages/${doc.id}").deleteRecursively()
     }
 }

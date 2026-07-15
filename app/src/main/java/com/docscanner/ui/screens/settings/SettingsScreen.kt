@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.automirrored.filled.Label
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -35,6 +36,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -192,24 +194,32 @@ fun SettingsScreen(
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Default Page Size", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    Box {
-                        OutlinedButton(onClick = { showPageSizeMenu = true }) {
-                            Text(state.pageSize.label)
-                        }
-                        DropdownMenu(
-                            expanded = showPageSizeMenu,
-                            onDismissRequest = { showPageSizeMenu = false },
-                        ) {
-                            PageSize.entries.forEach { size ->
-                                DropdownMenuItem(
-                                    text = { Text(size.label) },
-                                    onClick = {
-                                        viewModel.setPageSize(size)
-                                        showPageSizeMenu = false
-                                    },
-                                )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Default Page Size",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Box {
+                            OutlinedButton(onClick = { showPageSizeMenu = true }) {
+                                Text(state.pageSize.label)
+                            }
+                            DropdownMenu(
+                                expanded = showPageSizeMenu,
+                                onDismissRequest = { showPageSizeMenu = false },
+                            ) {
+                                PageSize.entries.forEach { size ->
+                                    DropdownMenuItem(
+                                        text = { Text(size.label) },
+                                        onClick = {
+                                            viewModel.setPageSize(size)
+                                            showPageSizeMenu = false
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -220,17 +230,25 @@ fun SettingsScreen(
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Default Save Location", style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Default Save Location",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(onClick = { folderPickerLauncher.launch(null) }) {
+                            Icon(Icons.Default.Folder, contentDescription = null)
+                            Text("  Change Folder")
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         state.defaultSaveLabel,
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(onClick = { folderPickerLauncher.launch(null) }) {
-                        Icon(Icons.Default.Folder, contentDescription = null)
-                        Text("  Change Folder")
-                    }
                 }
             }
 
@@ -262,6 +280,30 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+            }
+
+                Spacer(Modifier.height(16.dp))
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Cache", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "View and clear viewer cache",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.loadCacheInfo() },
+                        ) {
+                            Text("Check Cache")
+                        }
                     }
                 }
             }
@@ -310,5 +352,51 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    when (val cs = state.cleanupState) {
+        is CleanupState.CACHE_INFO -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissCleanupDone() },
+                title = { Text("Viewer Cache") },
+                text = {
+                    Column {
+                        Text("${cs.entries.size} docs cached, ${cs.totalBytes / 1024} KB total")
+                        Spacer(Modifier.height(8.dp))
+                        cs.entries.forEach { entry ->
+                            Text(
+                                "${entry.docName}: ${entry.pageCount}p, ${entry.bytes / 1024} KB",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        viewModel.confirmCleanCache()
+                    }) {
+                        Text("Clear All")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissCleanupDone() }) {
+                        Text("Close")
+                    }
+                },
+            )
+        }
+        is CleanupState.DONE -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissCleanupDone() },
+                title = { Text("Done") },
+                text = { Text(cs.message) },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.dismissCleanupDone() }) {
+                        Text("OK")
+                    }
+                },
+            )
+        }
+        is CleanupState.IDLE -> {}
     }
 }

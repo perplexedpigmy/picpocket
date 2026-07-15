@@ -15,12 +15,14 @@ import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.pdf.PageSize
 import com.docscanner.domain.pdf.PdfGenerator
+import com.docscanner.domain.pdf.PdfPageRenderer
 import com.docscanner.domain.pdf.PdfResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -32,6 +34,7 @@ data class DetailUiState(
     val pages: List<Page> = emptyList(),
     val reorderablePages: List<Page> = emptyList(),
     val isLoading: Boolean = true,
+    val showInfoPane: Boolean = true,
     val showRenameDialog: Boolean = false,
     val renameText: String = "",
     val isEditMode: Boolean = false,
@@ -48,6 +51,7 @@ class DocumentDetailViewModel @Inject constructor(
     application: Application,
     private val repository: DocumentRepository,
     @SearchablePdf private val searchablePdf: PdfGenerator,
+    private val pdfPageRenderer: PdfPageRenderer,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(DetailUiState())
@@ -56,6 +60,7 @@ class DocumentDetailViewModel @Inject constructor(
     private val prefs = getApplication<Application>().getSharedPreferences("settings", 0)
 
     private var currentDocumentId: Long = 0
+    private var isRegenerating = false
 
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
@@ -72,6 +77,14 @@ class DocumentDetailViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            val initialPages = repository.observePages(documentId).first()
+            _uiState.update { it.copy(pages = initialPages, reorderablePages = initialPages) }
+
+            val doc = repository.getDocument(documentId)
+            if (doc != null) {
+                ensurePagesCached(doc, initialPages)
+            }
+
             repository.observePages(documentId).collect { pages ->
                 val current = _uiState.value
                 if (!current.isEditMode || current.reorderablePages.isEmpty()) {
@@ -86,6 +99,24 @@ class DocumentDetailViewModel @Inject constructor(
                 _uiState.update { it.copy(documentTags = tags) }
             }
         }
+    }
+
+    private suspend fun ensurePagesCached(doc: Document, pages: List<Page>) {
+        val app = getApplication<Application>()
+        val pdfUri = doc.outputUri ?: return
+        val pagesDir = File(app.cacheDir, "pages/${doc.id}")
+        val needsRender = pages.any { page ->
+            val path = Uri.parse(page.imageUri).path
+            path == null || !File(path).exists()
+        }
+        if (!needsRender) return
+        pdfPageRenderer.renderAllPages(app, Uri.parse(pdfUri), pages, pagesDir) { pageId, newUri ->
+            repository.updatePageImageUri(pageId, newUri)
+        }
+    }
+
+    fun toggleInfoPane() {
+        _uiState.update { it.copy(showInfoPane = !it.showInfoPane) }
     }
 
     fun showTagsSheet() {
@@ -156,13 +187,36 @@ class DocumentDetailViewModel @Inject constructor(
 
     fun toggleEditMode() {
         val state = _uiState.value
+        if (state.isLoading) return
         if (state.isEditMode) {
-            val docId = state.document?.id ?: return
+            val doc = state.document ?: return
+            val docId = doc.id
             viewModelScope.launch {
-                repository.reorderPages(docId, state.reorderablePages.map { it.id })
+                isRegenerating = true
+                try {
+                    val pages = state.reorderablePages
+                    if (pages.isNotEmpty()) {
+                        val outputUri = doc.outputUri ?: return@launch
+                        val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
+                        val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
+                        val app = getApplication<Application>()
+                        val result = searchablePdf.generate(app, pages, Uri.parse(outputUri), pageSize)
+                        when (result) {
+                            is PdfResult.Success -> {
+                                repository.reorderPages(docId, pages.map { it.id })
+                                repository.updateDocumentOutputUri(docId, result.uri)
+                            }
+                            is PdfResult.Error -> { }
+                        }
+                    }
+                } finally {
+                    _uiState.update { it.copy(isEditMode = false) }
+                    isRegenerating = false
+                }
             }
+        } else {
+            _uiState.update { it.copy(isEditMode = true) }
         }
-        _uiState.update { it.copy(isEditMode = !it.isEditMode) }
     }
 
     fun reorderLocally(fromIndex: Int, toIndex: Int) {
@@ -191,7 +245,7 @@ class DocumentDetailViewModel @Inject constructor(
                 val result = searchablePdf.generate(app, remainingPages, Uri.parse(outputUri), pageSize)
                 when (result) {
                     is PdfResult.Success -> repository.updateDocumentOutputUri(docId, result.uri)
-                    is PdfResult.Error -> { /* PDF regeneration failed silently */ }
+                    is PdfResult.Error -> { }
                 }
             }
         }

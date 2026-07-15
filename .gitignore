@@ -14,3 +14,4 @@ docs/
 *.aab
 *.hprof
 *.log
+/internal/

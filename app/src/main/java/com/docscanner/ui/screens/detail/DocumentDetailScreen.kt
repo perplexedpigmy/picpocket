@@ -5,7 +5,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,13 +32,14 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -68,11 +68,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.docscanner.data.model.Page
 import com.docscanner.ui.components.ShareOptionsSheet
 import com.docscanner.ui.components.TagSelectorSheet
 import com.docscanner.ui.theme.TagColors
-import java.io.File
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyGridState
 
@@ -104,7 +102,7 @@ fun DocumentDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.toggleEditMode() }) {
+                    IconButton(onClick = { viewModel.toggleEditMode() }, enabled = !state.isLoading) {
                         Icon(
                             if (state.isEditMode) Icons.Default.Check else Icons.Default.Edit,
                             contentDescription = if (state.isEditMode) "Done editing" else "Edit",
@@ -175,73 +173,91 @@ fun DocumentDetailScreen(
                 state.document?.let { doc ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Name: ${doc.name}", style = MaterialTheme.typography.bodyLarge)
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "Created: ${formatDate(doc.createdAt)}",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                "Updated: ${formatDate(doc.updatedAt)}",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            Text(
-                                "Pages: ${state.pages.size}",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            if (state.documentTags.isNotEmpty()) {
-                                Spacer(Modifier.height(8.dp))
-                                Text("Tags", style = MaterialTheme.typography.labelMedium)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "Name: ${doc.name}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(onClick = { viewModel.toggleInfoPane() }) {
+                                    Icon(
+                                        if (state.showInfoPane) Icons.Default.ExpandLess
+                                        else Icons.Default.ExpandMore,
+                                        contentDescription = if (state.showInfoPane) "Collapse" else "Expand",
+                                    )
+                                }
+                            }
+                            if (state.showInfoPane) {
                                 Spacer(Modifier.height(4.dp))
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    state.documentTags.forEach { tag ->
-                                        val chipColor = TagColors.getOrElse(tag.colorIndex) { TagColors[0] }
-                                        Row(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(12.dp))
-                                                .background(chipColor.copy(alpha = 0.15f))
-                                                .padding(start = 8.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                        ) {
-                                            Box(
+                                Text(
+                                    "Created: ${formatDate(doc.createdAt)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    "Updated: ${formatDate(doc.updatedAt)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    "Pages: ${state.pages.size}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                if (state.documentTags.isNotEmpty()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Tags", style = MaterialTheme.typography.labelMedium)
+                                    Spacer(Modifier.height(4.dp))
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        state.documentTags.forEach { tag ->
+                                            val chipColor = TagColors.getOrElse(tag.colorIndex) { TagColors[0] }
+                                            Row(
                                                 modifier = Modifier
-                                                    .size(6.dp)
-                                                    .clip(CircleShape)
-                                                    .background(chipColor),
-                                            )
-                                            Spacer(Modifier.width(4.dp))
-                                            Text(
-                                                tag.name,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = chipColor,
-                                            )
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(chipColor.copy(alpha = 0.15f))
+                                                    .padding(start = 8.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .clip(CircleShape)
+                                                        .background(chipColor),
+                                                )
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(
+                                                    tag.name,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = chipColor,
+                                                )
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { viewModel.showTagsSheet() }
-                                    .padding(vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    "Add tags",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
+                                Spacer(Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { viewModel.showTagsSheet() }
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Icon(
+                                        Icons.Default.Add,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        "Add tags",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
                             }
                         }
                     }
@@ -271,7 +287,7 @@ fun DocumentDetailScreen(
                             val index = state.reorderablePages.indexOf(page)
                             val itemModifier = if (state.isEditMode) Modifier.draggableHandle() else Modifier
                             PageThumbnail(
-                                page = page,
+                                imageUri = page.imageUri,
                                 pageNumber = index + 1,
                                 isEditMode = state.isEditMode,
                                 onDelete = { viewModel.deletePage(page.id) },
@@ -359,12 +375,13 @@ fun DocumentDetailScreen(
             },
         )
     }
+
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PageThumbnail(
-    page: Page,
+    imageUri: String,
     pageNumber: Int,
     isEditMode: Boolean = false,
     onDelete: () -> Unit = {},
@@ -377,13 +394,13 @@ private fun PageThumbnail(
             .aspectRatio(0.7f),
     ) {
         Box {
-            val bitmap = remember(page.imageUri) {
-                try {
-                    val file = File(Uri.parse(page.imageUri).path!!)
-                    android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-                } catch (e: Exception) {
-                    null
-                }
+            val bitmap = remember(imageUri) {
+                val path = android.net.Uri.parse(imageUri).path
+                if (path != null) {
+                    try {
+                        android.graphics.BitmapFactory.decodeFile(path)
+                    } catch (_: Exception) { null }
+                } else null
             }
             if (bitmap != null) {
                 Image(

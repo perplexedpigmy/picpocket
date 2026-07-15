@@ -105,6 +105,18 @@ fun ScannerScreen(
         viewModel.handleScannerIntent(result.data)
     }
 
+    val saveFolderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) viewModel.onSaveFolderPicked(uri)
+    }
+
+    LaunchedEffect(state.showSaveFolderPicker) {
+        if (state.showSaveFolderPicker) {
+            saveFolderPicker.launch(null)
+        }
+    }
+
     LaunchedEffect(state.pendingIntentSender) {
         state.pendingIntentSender?.let { sender ->
             val request = IntentSenderRequest.Builder(sender).build()

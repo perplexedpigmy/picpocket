@@ -59,8 +59,12 @@ class ScannerViewModelTest {
         val executor = WorkflowExecutor(
             RuntimeEnvironment.getApplication() as Application,
         )
+        val app = RuntimeEnvironment.getApplication() as Application
+        app.getSharedPreferences("settings", 0).edit()
+            .putString("default_save_uri", Uri.fromFile(app.cacheDir).toString())
+            .apply()
         viewModel = ScannerViewModel(
-            RuntimeEnvironment.getApplication() as Application,
+            app,
             repo,
             com.docscanner.domain.scanner.ScannerManager(),
             pipeline,

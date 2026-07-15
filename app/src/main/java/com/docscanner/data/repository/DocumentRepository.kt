@@ -16,9 +16,11 @@ interface DocumentRepository {
     suspend fun createDocument(name: String): Long
     suspend fun addPage(documentId: Long, imageUri: String, filterTypeOrdinal: Int = 0, fileSizeBytes: Long = 0): Long
     suspend fun updatePageOcrText(pageId: Long, ocrText: String)
+    suspend fun updatePageImageUri(pageId: Long, imageUri: String)
     suspend fun updateDocumentName(documentId: Long, name: String)
     suspend fun updateDocumentOutputUri(documentId: Long, uri: String)
     suspend fun getDocumentsByName(name: String): List<Document>
+    suspend fun getAllDocuments(): List<Document>
     suspend fun deleteDocumentsByName(name: String)
     suspend fun deleteDocuments(documentIds: List<Long>)
     suspend fun deleteDocument(documentId: Long)
