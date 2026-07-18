@@ -1,6 +1,8 @@
 package com.docscanner.ui.screens.detail
 
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -51,6 +53,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -60,7 +63,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +73,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.docscanner.data.model.DocumentId
+import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.components.ShareOptionsSheet
 import com.docscanner.ui.components.TagSelectorSheet
 import com.docscanner.ui.theme.TagColors
@@ -77,14 +85,23 @@ import sh.calvin.reorderable.rememberReorderableLazyGridState
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun DocumentDetailScreen(
-    documentId: Long,
+    documentId: DocumentId,
     onNavigateBack: () -> Unit,
-    onPageView: (Long, Int) -> Unit = { _, _ -> },
-    onAddPage: (Long) -> Unit,
+    onPageView: (DocumentId, Int) -> Unit = { _, _ -> },
+    onAddPage: (DocumentId) -> Unit,
     viewModel: DocumentDetailViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
     val allTags by viewModel.allTags.collectAsState()
+    val contextForExport = LocalContext.current
+
+    val exportPdfLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportPdf(contextForExport, uri)
+        }
+    }
 
     LaunchedEffect(documentId) {
         viewModel.loadDocument(documentId)
@@ -102,6 +119,13 @@ fun DocumentDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { viewModel.toggleInfoPane() }) {
+                        Icon(
+                            if (state.showInfoPane) Icons.Default.ExpandLess
+                            else Icons.Default.ExpandMore,
+                            contentDescription = if (state.showInfoPane) "Collapse info" else "Expand info",
+                        )
+                    }
                     IconButton(onClick = { viewModel.toggleEditMode() }, enabled = !state.isLoading) {
                         Icon(
                             if (state.isEditMode) Icons.Default.Check else Icons.Default.Edit,
@@ -116,6 +140,16 @@ fun DocumentDetailScreen(
                             expanded = state.showOverflowMenu,
                             onDismissRequest = { viewModel.hideOverflowMenu() },
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Export as PDF") },
+                                onClick = {
+                                    viewModel.hideOverflowMenu()
+                                    viewModel.showExportDialog()
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Share, contentDescription = null)
+                                },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Rename") },
                                 onClick = {
@@ -171,27 +205,9 @@ fun DocumentDetailScreen(
                     .padding(16.dp),
             ) {
                 state.document?.let { doc ->
+                    if (state.showInfoPane) {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    "Name: ${doc.name}",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                IconButton(onClick = { viewModel.toggleInfoPane() }) {
-                                    Icon(
-                                        if (state.showInfoPane) Icons.Default.ExpandLess
-                                        else Icons.Default.ExpandMore,
-                                        contentDescription = if (state.showInfoPane) "Collapse" else "Expand",
-                                    )
-                                }
-                            }
-                            if (state.showInfoPane) {
-                                Spacer(Modifier.height(4.dp))
                                 Text(
                                     "Created: ${formatDate(doc.createdAt)}",
                                     style = MaterialTheme.typography.bodyMedium,
@@ -203,6 +219,28 @@ fun DocumentDetailScreen(
                                 Text(
                                     "Pages: ${state.pages.size}",
                                     style = MaterialTheme.typography.bodyMedium,
+                                )
+                                if (doc.totalFileSize > 0) {
+                                    Text(
+                                        "Size: ${formatFileSize(doc.totalFileSize)}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
+                                val qualityTier = QualityTier.entries.getOrNull(doc.qualityTier)
+                                if (qualityTier != null) {
+                                    Text(
+                                        "Quality: ${qualityTier.label}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                }
+                                Text(
+                                    if (doc.ocrComplete) "OCR: Complete"
+                                    else "OCR: Pending",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (doc.ocrComplete)
+                                        MaterialTheme.colorScheme.onSurface
+                                    else
+                                        MaterialTheme.colorScheme.tertiary,
                                 )
                                 if (state.documentTags.isNotEmpty()) {
                                     Spacer(Modifier.height(8.dp))
@@ -275,27 +313,31 @@ fun DocumentDetailScreen(
                     },
                 )
 
+                val verticalSpacing = if (state.isEditMode) 24.dp else 12.dp
+
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(164.dp),
                     state = lazyGridState,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(verticalSpacing),
                     contentPadding = PaddingValues(4.dp),
                 ) {
-                    items(state.reorderablePages, key = { it.id }) { page ->
-                        ReorderableItem(reorderableState, key = page.id) { _ ->
-                            val index = state.reorderablePages.indexOf(page)
-                            val itemModifier = if (state.isEditMode) Modifier.draggableHandle() else Modifier
-                            PageThumbnail(
-                                imageUri = page.imageUri,
-                                pageNumber = index + 1,
-                                isEditMode = state.isEditMode,
-                                onDelete = { viewModel.deletePage(page.id) },
-                                onView = { onPageView(documentId, index) },
-                                modifier = itemModifier,
-                            )
+                        items(state.reorderablePages, key = { it.id }) { page ->
+                            ReorderableItem(reorderableState, key = page.id) { _ ->
+                                val index = state.reorderablePages.indexOf(page)
+                                val itemModifier = if (state.isEditMode) Modifier.draggableHandle() else Modifier
+                                PageThumbnail(
+                                    imageUri = page.imageUri,
+                                    pageNumber = index + 1,
+                                    ocrText = page.ocrText,
+                                    isEditMode = state.isEditMode,
+                                    isMarkedForDeletion = page.filename in state.markedForDeletion,
+                                    onDelete = { viewModel.toggleMarkForDeletion(page.filename) },
+                                    onView = { onPageView(documentId, index) },
+                                    modifier = itemModifier,
+                                )
+                            }
                         }
-                    }
                 }
             }
         }
@@ -321,6 +363,45 @@ fun DocumentDetailScreen(
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideRenameDialog() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (state.showRenameOverwriteDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelRenameOverwrite() },
+            title = { Text("Overwrite document?") },
+            text = { Text("A document named \"${state.renameOverwriteTargetName}\" already exists. Overwrite?") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmRenameOverwrite() }) {
+                    Text("Overwrite")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelRenameOverwrite() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    if (state.showEmptyDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelEmptyDelete() },
+            title = { Text("Delete document?") },
+            text = { Text("Removing all pages will delete this document.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.confirmEmptyDelete()
+                    onNavigateBack()
+                }) {
+                    Text("Delete Document", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelEmptyDelete() }) {
                     Text("Cancel")
                 }
             },
@@ -376,6 +457,54 @@ fun DocumentDetailScreen(
         )
     }
 
+    if (state.showExportDialog) {
+        var showPageSizeMenu by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { viewModel.hideExportDialog() },
+            title = { Text("Export as PDF") },
+            text = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Page Size", modifier = Modifier.weight(1f))
+                    Box {
+                        OutlinedButton(onClick = { showPageSizeMenu = true }) {
+                            Text(state.exportPageSize.label)
+                        }
+                        DropdownMenu(
+                            expanded = showPageSizeMenu,
+                            onDismissRequest = { showPageSizeMenu = false },
+                        ) {
+                            PageSize.entries.forEach { size ->
+                                DropdownMenuItem(
+                                    text = { Text(size.label) },
+                                    onClick = {
+                                        viewModel.setExportPageSize(size)
+                                        showPageSizeMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.hideExportDialog()
+                    exportPdfLauncher.launch("${state.document?.name?.replace(" ", "_") ?: "document"}.pdf")
+                }) {
+                    Text("Export")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.hideExportDialog() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -383,7 +512,9 @@ fun DocumentDetailScreen(
 private fun PageThumbnail(
     imageUri: String,
     pageNumber: Int,
+    ocrText: String? = null,
     isEditMode: Boolean = false,
+    isMarkedForDeletion: Boolean = false,
     onDelete: () -> Unit = {},
     onView: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -427,6 +558,13 @@ private fun PageThumbnail(
                     Text("Failed to load", style = MaterialTheme.typography.labelSmall)
                 }
             }
+            if (isMarkedForDeletion) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                )
+            }
             Text(
                 "Page $pageNumber",
                 modifier = Modifier
@@ -435,6 +573,20 @@ private fun PageThumbnail(
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 style = MaterialTheme.typography.labelSmall,
             )
+            if (ocrText == null) {
+                Text(
+                    "No OCR",
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+                            shape = RoundedCornerShape(4.dp),
+                        )
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
             if (isEditMode) {
                 Icon(
                     Icons.Default.DragHandle,
@@ -451,14 +603,16 @@ private fun PageThumbnail(
                         .align(Alignment.TopEnd)
                         .size(32.dp)
                         .background(
-                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+                            if (isMarkedForDeletion) MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)
+                            else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
                             shape = MaterialTheme.shapes.small,
                         ),
                 ) {
                     Icon(
                         Icons.Default.Delete,
                         contentDescription = "Delete page",
-                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        tint = if (isMarkedForDeletion) MaterialTheme.colorScheme.onPrimary
+                               else MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.size(18.dp),
                     )
                 }
@@ -470,4 +624,12 @@ private fun PageThumbnail(
 private fun formatDate(timestamp: Long): String {
     val sdf = java.text.SimpleDateFormat("MMM dd, yyyy  HH:mm", java.util.Locale.getDefault())
     return sdf.format(java.util.Date(timestamp))
+}
+
+private fun formatFileSize(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+        else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+    }
 }

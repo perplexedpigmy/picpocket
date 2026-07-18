@@ -5,18 +5,18 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
+import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
 import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
+import com.docscanner.data.store.DocumentStore
 import com.docscanner.di.SearchablePdf
+import com.docscanner.domain.ocr.OcrManager
 import com.docscanner.domain.pdf.PageSize
 import com.docscanner.domain.pdf.PdfGenerator
-import com.docscanner.domain.pdf.PdfPageRenderer
-import com.docscanner.domain.pdf.PdfResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,24 +34,32 @@ data class DetailUiState(
     val pages: List<Page> = emptyList(),
     val reorderablePages: List<Page> = emptyList(),
     val isLoading: Boolean = true,
-    val showInfoPane: Boolean = true,
+    val showInfoPane: Boolean = false,
+    val previousInfoPaneState: Boolean = false,
     val showRenameDialog: Boolean = false,
     val renameText: String = "",
     val isEditMode: Boolean = false,
+    val markedForDeletion: Set<String> = emptySet(),
     val showDeleteConfirmation: Boolean = false,
+    val showEmptyDeleteDialog: Boolean = false,
     val showTagsSheet: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
     val documentTags: List<Tag> = emptyList(),
-    val showOverflowMenu: Boolean = false,
     val showShareSheet: Boolean = false,
+    val showOverflowMenu: Boolean = false,
+    val showExportDialog: Boolean = false,
+    val exportPageSize: PageSize = PageSize.A4,
+    val showRenameOverwriteDialog: Boolean = false,
+    val renameOverwriteTargetName: String = "",
 )
 
 @HiltViewModel
 class DocumentDetailViewModel @Inject constructor(
     application: Application,
     private val repository: DocumentRepository,
-    @SearchablePdf private val searchablePdf: PdfGenerator,
-    private val pdfPageRenderer: PdfPageRenderer,
+    private val documentStore: DocumentStore,
+    @SearchablePdf private val searchablePdfGenerator: PdfGenerator,
+    private val ocrManager: OcrManager,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(DetailUiState())
@@ -59,8 +67,7 @@ class DocumentDetailViewModel @Inject constructor(
 
     private val prefs = getApplication<Application>().getSharedPreferences("settings", 0)
 
-    private var currentDocumentId: Long = 0
-    private var isRegenerating = false
+    private var currentDocumentId: DocumentId = ""
 
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
@@ -69,21 +76,19 @@ class DocumentDetailViewModel @Inject constructor(
         emptyList(),
     )
 
-    fun loadDocument(documentId: Long) {
+    fun loadDocument(documentId: DocumentId) {
         currentDocumentId = documentId
         viewModelScope.launch {
             repository.observeDocument(documentId).collect { doc ->
                 _uiState.update { it.copy(document = doc) }
+                if (doc != null && !doc.ocrComplete) {
+                    launch { ocrManager.runOcr(documentId) }
+                }
             }
         }
         viewModelScope.launch {
             val initialPages = repository.observePages(documentId).first()
             _uiState.update { it.copy(pages = initialPages, reorderablePages = initialPages) }
-
-            val doc = repository.getDocument(documentId)
-            if (doc != null) {
-                ensurePagesCached(doc, initialPages)
-            }
 
             repository.observePages(documentId).collect { pages ->
                 val current = _uiState.value
@@ -98,20 +103,6 @@ class DocumentDetailViewModel @Inject constructor(
             repository.observeDocumentTags(documentId).collect { tags ->
                 _uiState.update { it.copy(documentTags = tags) }
             }
-        }
-    }
-
-    private suspend fun ensurePagesCached(doc: Document, pages: List<Page>) {
-        val app = getApplication<Application>()
-        val pdfUri = doc.outputUri ?: return
-        val pagesDir = File(app.cacheDir, "pages/${doc.id}")
-        val needsRender = pages.any { page ->
-            val path = Uri.parse(page.imageUri).path
-            path == null || !File(path).exists()
-        }
-        if (!needsRender) return
-        pdfPageRenderer.renderAllPages(app, Uri.parse(pdfUri), pages, pagesDir) { pageId, newUri ->
-            repository.updatePageImageUri(pageId, newUri)
         }
     }
 
@@ -150,7 +141,7 @@ class DocumentDetailViewModel @Inject constructor(
 
     fun applyTags() {
         val docId = currentDocumentId
-        if (docId == 0L) return
+        if (docId.isEmpty()) return
         val tagIds = _uiState.value.selectedTagIds.toList()
         viewModelScope.launch {
             repository.setDocumentTags(docId, tagIds)
@@ -180,42 +171,76 @@ class DocumentDetailViewModel @Inject constructor(
         val name = _uiState.value.renameText
         if (name.isBlank()) return
         viewModelScope.launch {
+            val existing = repository.getDocumentsByName(name)
+            val conflict = existing.firstOrNull { it.id != docId }
+            if (conflict != null) {
+                _uiState.update { it.copy(showRenameOverwriteDialog = true, renameOverwriteTargetName = name) }
+                return@launch
+            }
             repository.updateDocumentName(docId, name)
             hideRenameDialog()
         }
+    }
+
+    fun confirmRenameOverwrite() {
+        val docId = _uiState.value.document?.id ?: return
+        val name = _uiState.value.renameOverwriteTargetName
+        if (name.isBlank()) return
+        _uiState.update { it.copy(showRenameOverwriteDialog = false) }
+        viewModelScope.launch {
+            repository.deleteDocumentsByName(name)
+            repository.updateDocumentName(docId, name)
+            hideRenameDialog()
+        }
+    }
+
+    fun cancelRenameOverwrite() {
+        _uiState.update { it.copy(showRenameOverwriteDialog = false) }
     }
 
     fun toggleEditMode() {
         val state = _uiState.value
         if (state.isLoading) return
         if (state.isEditMode) {
-            val doc = state.document ?: return
-            val docId = doc.id
+            val docId = currentDocumentId
+            val keptFilenames = state.reorderablePages
+                .map { it.filename }
+                .filter { it !in state.markedForDeletion }
+
+            if (keptFilenames.isEmpty()) {
+                _uiState.update { it.copy(showEmptyDeleteDialog = true) }
+                return
+            }
+
             viewModelScope.launch {
-                isRegenerating = true
-                try {
-                    val pages = state.reorderablePages
-                    if (pages.isNotEmpty()) {
-                        val outputUri = doc.outputUri ?: return@launch
-                        val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
-                        val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
-                        val app = getApplication<Application>()
-                        val result = searchablePdf.generate(app, pages, Uri.parse(outputUri), pageSize)
-                        when (result) {
-                            is PdfResult.Success -> {
-                                repository.reorderPages(docId, pages.map { it.id })
-                                repository.updateDocumentOutputUri(docId, result.uri)
-                            }
-                            is PdfResult.Error -> { }
-                        }
-                    }
-                } finally {
-                    _uiState.update { it.copy(isEditMode = false) }
-                    isRegenerating = false
+                repository.replacePages(docId, keptFilenames)
+                _uiState.update {
+                    it.copy(
+                        isEditMode = false,
+                        markedForDeletion = emptySet(),
+                        showInfoPane = it.previousInfoPaneState,
+                    )
                 }
             }
         } else {
-            _uiState.update { it.copy(isEditMode = true) }
+            _uiState.update {
+                it.copy(
+                    isEditMode = true,
+                    previousInfoPaneState = it.showInfoPane,
+                    showInfoPane = false,
+                )
+            }
+        }
+    }
+
+    fun toggleMarkForDeletion(filename: String) {
+        _uiState.update { state ->
+            val newSet = if (filename in state.markedForDeletion) {
+                state.markedForDeletion - filename
+            } else {
+                state.markedForDeletion + filename
+            }
+            state.copy(markedForDeletion = newSet)
         }
     }
 
@@ -226,29 +251,6 @@ class DocumentDetailViewModel @Inject constructor(
         val item = pages.removeAt(fromIndex)
         pages.add(toIndex, item)
         _uiState.update { it.copy(reorderablePages = pages) }
-    }
-
-    fun deletePage(pageId: Long) {
-        val docId = _uiState.value.document?.id ?: return
-        viewModelScope.launch {
-            repository.deletePage(pageId)
-            _uiState.update {
-                it.copy(reorderablePages = it.reorderablePages.filter { p -> p.id != pageId })
-            }
-            val remainingPages = repository.getPages(docId)
-            if (remainingPages.isNotEmpty()) {
-                val doc = repository.getDocument(docId)
-                val outputUri = doc?.outputUri ?: return@launch
-                val app = getApplication<Application>()
-                val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
-                val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
-                val result = searchablePdf.generate(app, remainingPages, Uri.parse(outputUri), pageSize)
-                when (result) {
-                    is PdfResult.Success -> repository.updateDocumentOutputUri(docId, result.uri)
-                    is PdfResult.Error -> { }
-                }
-            }
-        }
     }
 
     fun showDeleteConfirmation() {
@@ -266,22 +268,35 @@ class DocumentDetailViewModel @Inject constructor(
         }
     }
 
+    fun confirmEmptyDelete() {
+        _uiState.update { it.copy(showEmptyDeleteDialog = false) }
+        deleteDocument()
+    }
+
+    fun cancelEmptyDelete() {
+        _uiState.update { it.copy(showEmptyDeleteDialog = false) }
+    }
+
     fun movePage(pageId: Long, newIndex: Int) {
-        val docId = _uiState.value.document?.id ?: return
+        val docId = currentDocumentId
+        if (docId.isEmpty()) return
         val pages = _uiState.value.pages.toMutableList()
         val currentIndex = pages.indexOfFirst { it.id == pageId }
         if (currentIndex < 0) return
         val page = pages.removeAt(currentIndex)
         pages.add(newIndex, page)
         viewModelScope.launch {
-            repository.reorderPages(docId, pages.map { it.id })
+            repository.reorderPages(docId, pages.map { it.pageNumber })
         }
     }
 
     fun reorderPages(pageIds: List<Long>) {
-        val docId = _uiState.value.document?.id ?: return
+        val docId = currentDocumentId
+        if (docId.isEmpty()) return
         viewModelScope.launch {
-            repository.reorderPages(docId, pageIds)
+            val pages = _uiState.value.pages
+            val pageNumbers = pageIds.mapNotNull { id -> pages.find { it.id == id }?.pageNumber }
+            repository.reorderPages(docId, pageNumbers)
         }
     }
 
@@ -301,40 +316,85 @@ class DocumentDetailViewModel @Inject constructor(
         _uiState.update { it.copy(showShareSheet = false) }
     }
 
+    fun showExportDialog() {
+        val doc = _uiState.value.document ?: return
+        val docPageSize = doc.pageSize?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } }
+        val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
+        _uiState.update { it.copy(showExportDialog = true, exportPageSize = pageSize) }
+    }
+
+    fun hideExportDialog() {
+        _uiState.update { it.copy(showExportDialog = false) }
+    }
+
+    fun setExportPageSize(pageSize: PageSize) {
+        _uiState.update { it.copy(exportPageSize = pageSize) }
+    }
+
+    fun exportPdf(context: Context, outputUri: Uri) {
+        val docId = currentDocumentId
+        val pageSize = _uiState.value.exportPageSize
+        if (docId.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val pages = repository.getPages(docId) ?: emptyList()
+                val result = searchablePdfGenerator.generate(context, pages, outputUri, pageSize)
+                when (result) {
+                    is com.docscanner.domain.pdf.PdfResult.Success -> {
+                        hideExportDialog()
+                    }
+                    is com.docscanner.domain.pdf.PdfResult.Error -> { }
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
     fun shareViaSystem(context: Context) {
         val doc = _uiState.value.document ?: return
-        val uriStr = doc.outputUri ?: return
-        val uri = Uri.parse(uriStr)
-        val shareUri = if (uri.scheme == "file") {
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(uri.path!!))
-        } else uri
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, shareUri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val docId = doc.id
+        viewModelScope.launch {
+            val pdfUri = generatePdfToTempFile(docId) ?: return@launch
+            val shareUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(pdfUri.path!!))
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, shareUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(intent, "Share PDF"))
         }
-        context.startActivity(Intent.createChooser(intent, "Share PDF"))
     }
 
     fun saveToDrive(folderUri: Uri) {
         val doc = _uiState.value.document ?: return
-        val uriStr = doc.outputUri ?: return
-        try {
-            val app = getApplication<Application>()
-            val folder = DocumentFile.fromTreeUri(app, folderUri) ?: return
-            val sourceUri = Uri.parse(uriStr)
-            val shareUri = if (sourceUri.scheme == "file") {
-                FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", File(sourceUri.path!!))
-            } else sourceUri
-            val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
-            val existing = folder.findFile(safeName)
-            if (existing != null) existing.delete()
-            val newFile = folder.createFile("application/pdf", safeName) ?: return
-            app.contentResolver.openInputStream(shareUri)?.use { input ->
-                app.contentResolver.openOutputStream(newFile.uri)?.use { output ->
-                    input.copyTo(output)
+        val docId = doc.id
+        viewModelScope.launch {
+            val pdfUri = generatePdfToTempFile(docId) ?: return@launch
+            try {
+                val app = getApplication<Application>()
+                val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
+                app.contentResolver.openInputStream(pdfUri)?.use { input ->
+                    app.contentResolver.openOutputStream(folderUri)?.use { output ->
+                        input.copyTo(output)
+                    }
                 }
-            }
-        } catch (_: Exception) { }
+            } catch (_: Exception) { }
+        }
+    }
+
+    private suspend fun generatePdfToTempFile(documentId: DocumentId): Uri? {
+        val pages = repository.getPages(documentId) ?: return null
+        if (pages.isEmpty()) return null
+        val app = getApplication<Application>()
+        val tempDir = File(app.cacheDir, "exports")
+        tempDir.mkdirs()
+        val tempFile = File(tempDir, "${documentId}.pdf")
+        val doc = _uiState.value.document
+        val docPageSize = doc?.pageSize?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } }
+        val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
+        val result = searchablePdfGenerator.generate(app, pages, Uri.fromFile(tempFile), pageSize)
+        return when (result) {
+            is com.docscanner.domain.pdf.PdfResult.Success -> Uri.parse(result.uri)
+            is com.docscanner.domain.pdf.PdfResult.Error -> null
+        }
     }
 }

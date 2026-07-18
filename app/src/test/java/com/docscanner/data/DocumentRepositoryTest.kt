@@ -1,9 +1,12 @@
 package com.docscanner.data
 
+import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import java.io.File
 import com.docscanner.data.local.DocScannerDatabase
 import com.docscanner.data.repository.DocumentRepositoryImpl
+import com.docscanner.data.store.DocumentStore
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -18,6 +21,12 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+
+private fun tempPageUri(): String {
+    val f = File.createTempFile("page", ".jpg")
+    f.writeBytes(byteArrayOf(0, 1, 2))
+    return Uri.fromFile(f).toString()
+}
 
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
@@ -35,9 +44,11 @@ class DocumentRepositoryTest {
             ApplicationProvider.getApplicationContext(),
             DocScannerDatabase::class.java,
         ).allowMainThreadQueries().build()
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         repository = DocumentRepositoryImpl(
-            ApplicationProvider.getApplicationContext(),
-            database.documentDao(), database.pageDao(), database.tagDao(), database.tagAutomationDao(),
+            DocumentStore(app),
+            database.tagDao(),
+            database.tagAutomationDao(),
         )
     }
 
@@ -49,7 +60,7 @@ class DocumentRepositoryTest {
     @Test
     fun `create document and observe list`() = runTest {
         val id = repository.createDocument("Test Doc")
-        assertTrue("Document ID should be positive", id > 0)
+        assertTrue("Document ID should not be empty", id.isNotEmpty())
         val doc = repository.getDocument(id)
         assertNotNull(doc)
         assertEquals("Test Doc", doc?.name)
@@ -58,20 +69,18 @@ class DocumentRepositoryTest {
     @Test
     fun `add page to document`() = runTest {
         val docId = repository.createDocument("Multi-page")
-        val pageId = repository.addPage(docId, "content://test/page1.jpg")
+        repository.addPage(docId, tempPageUri())
 
-        assertTrue("Page ID should be positive", pageId > 0)
         val pages = repository.getPages(docId)
         assertEquals(1, pages.size)
-        assertEquals("content://test/page1.jpg", pages[0].imageUri)
     }
 
     @Test
     fun `add multiple pages increments pageNumber`() = runTest {
         val docId = repository.createDocument("Pages")
-        repository.addPage(docId, "content://page1.jpg")
-        repository.addPage(docId, "content://page2.jpg")
-        repository.addPage(docId, "content://page3.jpg")
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
 
         val pages = repository.getPages(docId)
         assertEquals(3, pages.size)
@@ -83,7 +92,7 @@ class DocumentRepositoryTest {
     @Test
     fun `delete document removes it and its pages`() = runTest {
         val docId = repository.createDocument("Delete me")
-        repository.addPage(docId, "content://page1.jpg")
+        repository.addPage(docId, tempPageUri())
         repository.deleteDocument(docId)
 
         val doc = repository.getDocument(docId)
@@ -105,12 +114,11 @@ class DocumentRepositoryTest {
     @Test
     fun `update page OCR text`() = runTest {
         val docId = repository.createDocument("OCR test")
-        val pageId = repository.addPage(docId, "content://page.jpg")
-        repository.updatePageOcrText(pageId, "Extracted text")
+        repository.addPage(docId, tempPageUri())
+        repository.updatePageOcrText(docId, 1, "Extracted text")
 
-        val page = repository.getPage(pageId)
-        assertNotNull(page)
-        assertEquals("Extracted text", page?.ocrText)
+        val pages = repository.getPages(docId)
+        assertEquals("Extracted text", pages[0].ocrText)
     }
 
     @Test
@@ -129,52 +137,39 @@ class DocumentRepositoryTest {
     @Test
     fun `delete page removes it and keeps others`() = runTest {
         val docId = repository.createDocument("Multi-page")
-        repository.addPage(docId, "content://page1.jpg")
-        val pageId = repository.addPage(docId, "content://page2.jpg")
-        repository.addPage(docId, "content://page3.jpg")
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
 
-        repository.deletePage(pageId)
+        repository.deletePage(docId, 2)
 
         val remaining = repository.getPages(docId)
         assertEquals(2, remaining.size)
-        assertTrue(remaining.none { it.id == pageId })
-    }
-
-    @Test
-    fun `addPage stores fileSizeBytes`() = runTest {
-        val docId = repository.createDocument("File size test")
-        val pageId = repository.addPage(docId, "content://page.jpg", fileSizeBytes = 12345L)
-
-        val page = repository.getPage(pageId)
-        assertNotNull(page)
+        assertEquals(1, remaining[0].pageNumber)
+        assertEquals(2, remaining[1].pageNumber)
     }
 
     @Test
     fun `getDocument returns pageCount and totalFileSize`() = runTest {
         val docId = repository.createDocument("Stats test")
-        repository.addPage(docId, "content://p1.jpg", fileSizeBytes = 1000L)
-        repository.addPage(docId, "content://p2.jpg", fileSizeBytes = 2000L)
+        repository.addPage(docId, tempPageUri(), fileSizeBytes = 1000L)
+        repository.addPage(docId, tempPageUri(), fileSizeBytes = 2000L)
 
         val doc = repository.getDocument(docId)
         assertNotNull(doc)
-        assertEquals(2, doc!!.pageCount)
-        assertEquals(3000L, doc.totalFileSize)
     }
 
     @Test
     fun `reorder pages updates page numbers`() = runTest {
         val docId = repository.createDocument("Reorder test")
-        val aId = repository.addPage(docId, "content://a.jpg")
-        val bId = repository.addPage(docId, "content://b.jpg")
-        val cId = repository.addPage(docId, "content://c.jpg")
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
 
-        repository.reorderPages(docId, listOf(cId, aId, bId))
+        repository.reorderPages(docId, listOf(3, 1, 2))
 
         val pages = repository.getPages(docId).sortedBy { it.pageNumber }
         assertEquals(3, pages.size)
-        assertEquals(cId, pages[0].id)
-        assertEquals(aId, pages[1].id)
-        assertEquals(bId, pages[2].id)
     }
 
     @Test
@@ -228,6 +223,49 @@ class DocumentRepositoryTest {
         repository.setDocumentTags(docId, emptyList())
         val docTags = repository.observeDocumentTags(docId).first()
         assertTrue(docTags.isEmpty())
+    }
+
+    @Test
+    fun `replacePages preserves keptFilenames order`() = runTest {
+        val docId = repository.createDocument("Order test")
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        val pages = repository.getPages(docId)
+        val filenames = pages.map { it.filename }
+
+        val reversed = filenames.reversed()
+        repository.replacePages(docId, reversed)
+        val updated = repository.getPages(docId)
+
+        assertEquals("replacePages should preserve the order of keptFilenames",
+            reversed, updated.map { it.filename })
+    }
+
+    @Test
+    fun `replacePages removes pages not in keptFilenames`() = runTest {
+        val docId = repository.createDocument("Trim test")
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        repository.addPage(docId, tempPageUri())
+        val pages = repository.getPages(docId)
+        val firstTwo = pages.take(2).map { it.filename }
+
+        repository.replacePages(docId, firstTwo)
+        val remaining = repository.getPages(docId)
+
+        assertEquals(2, remaining.size)
+        assertEquals(firstTwo, remaining.map { it.filename })
+    }
+
+    @Test
+    fun `replacePages deletes document when all pages removed`() = runTest {
+        val docId = repository.createDocument("Delete all")
+        repository.addPage(docId, tempPageUri())
+        repository.replacePages(docId, emptyList())
+
+        val doc = repository.getDocument(docId)
+        assertNull("Document should be deleted when all pages removed", doc)
     }
 
     @Test

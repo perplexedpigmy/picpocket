@@ -45,13 +45,14 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun PageViewerScreen(
-    documentId: Long,
+    documentId: DocumentId,
     initialPageIndex: Int,
     onNavigateBack: () -> Unit,
     viewModel: PageViewerViewModel = hiltViewModel(),

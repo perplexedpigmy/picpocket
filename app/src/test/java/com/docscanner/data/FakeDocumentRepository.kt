@@ -1,6 +1,7 @@
 package com.docscanner.data
 
 import com.docscanner.data.model.Document
+import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
 import com.docscanner.data.model.Tag
 import com.docscanner.data.model.TagAutomation
@@ -12,87 +13,77 @@ import kotlinx.coroutines.flow.map
 class FakeDocumentRepository : DocumentRepository {
 
     private val documents = MutableStateFlow<List<Document>>(emptyList())
-    private val pages = mutableMapOf<Long, MutableStateFlow<List<Page>>>()
+    private val pageLists = mutableMapOf<DocumentId, MutableStateFlow<List<Page>>>()
+    private val pageFilenames = mutableMapOf<DocumentId, MutableStateFlow<Map<Long, String>>>()
     private val tags = MutableStateFlow<List<Tag>>(emptyList())
-    private val documentTags = mutableMapOf<Long, MutableStateFlow<List<Tag>>>()
-    private val documentTagMap = MutableStateFlow<Map<Long, List<Tag>>>(emptyMap())
-    private var nextDocId = 1L
-    private var nextPageId = 1L
+    private val documentTags = mutableMapOf<DocumentId, MutableStateFlow<List<Tag>>>()
+    private val documentTagMap = MutableStateFlow<Map<DocumentId, List<Tag>>>(emptyMap())
+    private var nextDocId = 0
     private var nextTagId = 1L
 
     override fun observeDocuments(): Flow<List<Document>> = documents
 
-    override fun observeDocument(documentId: Long): Flow<Document?> {
+    override fun observeDocument(documentId: DocumentId): Flow<Document?> {
         return documents.map { list -> list.find { it.id == documentId } }
     }
 
-    override fun observePages(documentId: Long): Flow<List<Page>> {
-        return pages.getOrPut(documentId) { MutableStateFlow(emptyList()) }
+    override fun observePages(documentId: DocumentId): Flow<List<Page>> {
+        return pageLists.getOrPut(documentId) { MutableStateFlow(emptyList()) }
     }
 
-    override suspend fun getDocument(documentId: Long): Document? {
+    override suspend fun getDocument(documentId: DocumentId): Document? {
         return documents.value.find { it.id == documentId }
     }
 
-    override suspend fun getPages(documentId: Long): List<Page> {
-        return pages[documentId]?.value ?: emptyList()
+    override suspend fun getPages(documentId: DocumentId): List<Page> {
+        return pageLists[documentId]?.value ?: emptyList()
     }
 
-    override suspend fun getPage(pageId: Long): Page? {
-        return pages.values.flatMap { it.value }.find { it.id == pageId }
-    }
-
-    override suspend fun createDocument(name: String): Long {
+    override suspend fun createDocument(name: String, qualityTier: Int, pageSize: String?): DocumentId {
         val now = System.currentTimeMillis()
-        val id = nextDocId++
-        val doc = Document(id, name, null, now, now)
+        nextDocId++
+        val id = "doc_$nextDocId"
+        val doc = Document(id, name, now, now, qualityTier = qualityTier, pageSize = pageSize)
         documents.value = documents.value + doc
         return id
     }
 
     override suspend fun addPage(
-        documentId: Long,
+        documentId: DocumentId,
         imageUri: String,
         filterTypeOrdinal: Int,
         fileSizeBytes: Long,
-    ): Long {
-        val id = nextPageId++
+        qualityTier: Int,
+    ) {
         val now = System.currentTimeMillis()
-        val existingPages = pages.getOrPut(documentId) { MutableStateFlow(emptyList()) }
+        val existingPages = pageLists.getOrPut(documentId) { MutableStateFlow(emptyList()) }
+        val pageNum = existingPages.value.size + 1
+        val filename = "%05d".format(pageNum)
         val page = Page(
-            id, documentId, existingPages.value.size + 1, imageUri,
-            null, filterTypeOrdinal, now,
+            id = pageNum.toLong(),
+            documentId = documentId,
+            pageNumber = pageNum,
+            filename = filename,
+            imageUri = imageUri,
+            ocrText = null,
+            filterTypeOrdinal = filterTypeOrdinal,
+            createdAt = now,
         )
         existingPages.value = existingPages.value + page
-        return id
+        val filenames = pageFilenames.getOrPut(documentId) { MutableStateFlow(emptyMap()) }
+        filenames.value = filenames.value + (page.id to filename)
     }
 
-    override suspend fun updatePageOcrText(pageId: Long, ocrText: String) {
-        for ((_, state) in pages) {
-            state.value = state.value.map {
-                if (it.id == pageId) it.copy(ocrText = ocrText) else it
-            }
+    override suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String) {
+        val state = pageLists[documentId] ?: return
+        state.value = state.value.map {
+            if (it.pageNumber == pageNumber) it.copy(ocrText = ocrText) else it
         }
     }
 
-    override suspend fun updatePageImageUri(pageId: Long, imageUri: String) {
-        for ((_, state) in pages) {
-            state.value = state.value.map {
-                if (it.id == pageId) it.copy(imageUri = imageUri) else it
-            }
-        }
-    }
-
-    override suspend fun updateDocumentName(documentId: Long, name: String) {
+    override suspend fun updateDocumentName(documentId: DocumentId, name: String) {
         documents.value = documents.value.map {
             if (it.id == documentId) it.copy(name = name) else it
-        }
-    }
-
-    override suspend fun updateDocumentOutputUri(documentId: Long, uri: String) {
-        val now = System.currentTimeMillis()
-        documents.value = documents.value.map {
-            if (it.id == documentId) it.copy(outputUri = uri, updatedAt = now) else it
         }
     }
 
@@ -109,46 +100,68 @@ class FakeDocumentRepository : DocumentRepository {
         deleteDocuments(ids)
     }
 
-    override suspend fun deleteDocuments(documentIds: List<Long>) {
+    override suspend fun deleteDocuments(documentIds: List<DocumentId>) {
         documents.value = documents.value.filter { it.id !in documentIds }
         for (id in documentIds) {
-            pages.remove(id)
+            pageLists.remove(id)
         }
     }
 
-    override suspend fun deleteDocument(documentId: Long) {
+    override suspend fun deleteDocument(documentId: DocumentId) {
         deleteDocuments(listOf(documentId))
     }
 
-    override suspend fun deletePage(pageId: Long) {
-        for ((_, state) in pages) {
-            state.value = state.value.filter { it.id != pageId }
+    override suspend fun deletePage(documentId: DocumentId, pageNumber: Int) {
+        val state = pageLists[documentId] ?: return
+        state.value = state.value.filter { it.pageNumber != pageNumber }
+        val filenames = pageFilenames[documentId]
+        if (filenames != null) {
+            val removed = filenames.value.filter { it.value == "%05d".format(pageNumber) }
+            filenames.value = filenames.value - removed.keys
         }
     }
 
-    override suspend fun reorderPages(documentId: Long, pageIds: List<Long>) {
-        val state = pages[documentId] ?: return
-        state.value = state.value.map { page ->
-            val newOrder = pageIds.indexOf(page.id)
-            if (newOrder >= 0) page.copy(pageNumber = newOrder) else page
+    override suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>) {
+        val state = pageLists[documentId] ?: return
+        val filenames = pageFilenames[documentId] ?: return
+        val keptSet = keptFilenames.toSet()
+        val keptIds = filenames.value.filter { it.value in keptSet }.keys
+        val survivors = state.value.filter { it.id in keptIds }
+        val newFilenames = survivors.mapIndexed { index, page ->
+            page.id to "%05d".format(index + 1)
+        }.toMap()
+        val updated = survivors.mapIndexed { index, page ->
+            page.copy(pageNumber = index + 1)
         }
+        state.value = updated
+        filenames.value = newFilenames
     }
 
-    override suspend fun searchDocumentsByOcrText(query: String): Set<Long> {
+    override suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>) {
+        val state = pageLists[documentId] ?: return
+        val pageMap = state.value.associateBy { it.pageNumber }
+        val reordered = pageNumbers.mapNotNull { pageMap[it] }
+        val updated = reordered.mapIndexed { index, page ->
+            page.copy(pageNumber = index + 1)
+        }
+        state.value = updated
+    }
+
+    override suspend fun searchDocumentsByOcrText(query: String): Set<DocumentId> {
         val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (_: Exception) { return emptySet() }
-        return pages.values.flatMap { it.value }
-            .filter { it.ocrText != null && regex.containsMatchIn(it.ocrText!!) }
-            .map { it.documentId }
-            .toSet()
+        return pageLists.entries.flatMap { (docId, state) ->
+            state.value.filter { it.ocrText != null && regex.containsMatchIn(it.ocrText!!) }
+                .map { docId }
+        }.toSet()
     }
 
     override fun observeAllTags(): Flow<List<Tag>> = tags
 
-    override fun observeDocumentTags(documentId: Long): Flow<List<Tag>> {
+    override fun observeDocumentTags(documentId: DocumentId): Flow<List<Tag>> {
         return documentTags.getOrPut(documentId) { MutableStateFlow(emptyList()) }
     }
 
-    override fun observeDocumentTagMap(): Flow<Map<Long, List<Tag>>> = documentTagMap
+    override fun observeDocumentTagMap(): Flow<Map<DocumentId, List<Tag>>> = documentTagMap
 
     override fun searchTags(query: String): Flow<List<Tag>> {
         return tags.map { list -> list.filter { it.name.contains(query, ignoreCase = true) } }
@@ -171,17 +184,17 @@ class FakeDocumentRepository : DocumentRepository {
         for ((_, state) in documentTags) {
             state.value = state.value.filter { it.id !in tagIds }
         }
-        val map = mutableMapOf<Long, List<Tag>>()
+        val map = mutableMapOf<DocumentId, List<Tag>>()
         for ((id, state) in documentTags) {
             map[id] = state.value
         }
         documentTagMap.value = map
     }
 
-    override suspend fun setDocumentTags(documentId: Long, tagIds: List<Long>) {
+    override suspend fun setDocumentTags(documentId: DocumentId, tagIds: List<Long>) {
         val selected = tags.value.filter { it.id in tagIds }
         documentTags.getOrPut(documentId) { MutableStateFlow(emptyList()) }.value = selected
-        val map = mutableMapOf<Long, List<Tag>>()
+        val map = mutableMapOf<DocumentId, List<Tag>>()
         for ((id, state) in documentTags) {
             map[id] = state.value
         }

@@ -1,8 +1,6 @@
 package com.docscanner.ui
 
-import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
-import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.domain.pdf.PageSize
 import com.docscanner.ui.screens.settings.SettingsViewModel
 import com.docscanner.ui.theme.DarkMode
@@ -12,7 +10,6 @@ import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -29,17 +26,12 @@ class SettingsViewModelTest {
 
     private lateinit var viewModel: SettingsViewModel
     private lateinit var themeManager: ThemeManager
-    private lateinit var repository: FakeDocumentRepository
 
     @Before
     fun setUp() {
-        themeManager = ThemeManager(ApplicationProvider.getApplicationContext())
-        repository = FakeDocumentRepository()
-        viewModel = SettingsViewModel(
-            ApplicationProvider.getApplicationContext(),
-            themeManager,
-            repository,
-        )
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        themeManager = ThemeManager(app)
+        viewModel = SettingsViewModel(app, themeManager)
     }
 
     @Test
@@ -59,14 +51,6 @@ class SettingsViewModelTest {
         viewModel.toggleSearchablePdf(false)
         viewModel.toggleSearchablePdf(true)
         assertTrue(viewModel.uiState.value.searchablePdf)
-    }
-
-    @Test
-    fun `set default save URI`() {
-        val uri = Uri.parse("content://com.android.externalstorage/doc/primary/Documents")
-        viewModel.setDefaultSaveUri(uri)
-        assertNotNull(viewModel.uiState.value.defaultSaveUri)
-        assertTrue(viewModel.uiState.value.defaultSaveLabel.isNotEmpty())
     }
 
     @Test

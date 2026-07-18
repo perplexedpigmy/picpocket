@@ -1,6 +1,8 @@
 package com.docscanner.ui
 
+import android.app.Application
 import com.docscanner.data.FakeDocumentRepository
+import com.docscanner.domain.pdf.FakePdfGenerator
 import com.docscanner.ui.components.MatchMode
 import com.docscanner.ui.screens.home.HomeViewModel
 import com.docscanner.util.MainCoroutineRule
@@ -15,6 +17,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
@@ -29,7 +32,8 @@ class HomeViewModelTest {
     @Before
     fun setUp() {
         repo = FakeDocumentRepository()
-        viewModel = HomeViewModel(repo)
+        val app = RuntimeEnvironment.getApplication() as Application
+        viewModel = HomeViewModel(app, repo, FakePdfGenerator())
     }
 
     @Test
@@ -73,11 +77,12 @@ class HomeViewModelTest {
     }
 
     @Test
-    fun `toggle selection mode`() {
+    fun `toggle selection mode`() = runTest {
+        val docId = repo.createDocument("Doc1")
         assertFalse(viewModel.uiState.value.selectionMode)
-        viewModel.onDocumentLongPress(1L)
+        viewModel.onDocumentLongPress(docId)
         assertTrue(viewModel.uiState.value.selectionMode)
-        assertEquals(setOf(1L), viewModel.uiState.value.selectedDocumentIds)
+        assertEquals(setOf(docId), viewModel.uiState.value.selectedDocumentIds)
     }
 
     @Test
@@ -205,10 +210,10 @@ class HomeViewModelTest {
     fun `search in content finds documents by OCR text`() = runTest {
         val doc1 = repo.createDocument("Invoice")
         val doc2 = repo.createDocument("Receipt")
-        val page1 = repo.addPage(doc1, "content://page1.jpg")
-        val page2 = repo.addPage(doc2, "content://page2.jpg")
-        repo.updatePageOcrText(page1, "This invoice is for $500")
-        repo.updatePageOcrText(page2, "Receipt for groceries")
+        repo.addPage(doc1, "content://page1.jpg")
+        repo.addPage(doc2, "content://page2.jpg")
+        repo.updatePageOcrText(doc1, 1, "This invoice is for $500")
+        repo.updatePageOcrText(doc2, 1, "Receipt for groceries")
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         viewModel.toggleSearchInContent()
@@ -223,9 +228,9 @@ class HomeViewModelTest {
     fun `search in content matches both name and OCR`() = runTest {
         val doc1 = repo.createDocument("Tax Return")
         val doc2 = repo.createDocument("Notes")
-        val page1 = repo.addPage(doc1, "content://page1.jpg")
-        val page2 = repo.addPage(doc2, "content://page2.jpg")
-        repo.updatePageOcrText(page2, "This is about tax deductions")
+        repo.addPage(doc1, "content://page1.jpg")
+        repo.addPage(doc2, "content://page2.jpg")
+        repo.updatePageOcrText(doc2, 1, "This is about tax deductions")
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         viewModel.toggleSearchInContent()
@@ -238,8 +243,8 @@ class HomeViewModelTest {
     @Test
     fun `search in content only matches when toggled on`() = runTest {
         val doc1 = repo.createDocument("Invoice Summary")
-        val page1 = repo.addPage(doc1, "content://page1.jpg")
-        repo.updatePageOcrText(page1, "Total due: $1000")
+        repo.addPage(doc1, "content://page1.jpg")
+        repo.updatePageOcrText(doc1, 1, "Total due: $1000")
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         viewModel.setSearchQuery("due")

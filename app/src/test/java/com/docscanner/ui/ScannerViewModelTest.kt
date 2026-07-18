@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
 import com.docscanner.data.FakeDocumentRepository
+import com.docscanner.data.store.DocumentStore
 import com.docscanner.data.workflow.WorkflowExecutor
 import com.docscanner.domain.filter.BinarizeFilter
 import com.docscanner.domain.filter.BrightnessFilter
@@ -13,8 +14,8 @@ import com.docscanner.domain.filter.FilterType
 import com.docscanner.domain.filter.GrayscaleFilter
 import com.docscanner.domain.filter.SharpenFilter
 import com.docscanner.domain.ocr.FakeOcrEngine
+import com.docscanner.domain.ocr.OcrManager
 import com.docscanner.domain.pdf.FakePdfGenerator
-import com.docscanner.domain.pdf.PageSize
 import com.docscanner.domain.scanner.ScannerResult
 import com.docscanner.ui.screens.scanner.ScannerViewModel
 import com.docscanner.util.MainCoroutineRule
@@ -43,33 +44,29 @@ class ScannerViewModelTest {
     val coroutineRule = MainCoroutineRule()
 
     private lateinit var repo: FakeDocumentRepository
-    private lateinit var fakeOcr: FakeOcrEngine
-    private lateinit var fakePdf: FakePdfGenerator
+    private lateinit var ocrManager: OcrManager
     private lateinit var viewModel: ScannerViewModel
 
     @Before
     fun setUp() {
         repo = FakeDocumentRepository()
-        fakeOcr = FakeOcrEngine()
-        fakePdf = FakePdfGenerator()
+        val app = RuntimeEnvironment.getApplication() as Application
+        ocrManager = OcrManager(FakeOcrEngine(), DocumentStore(app))
         val pipeline = FilterPipeline(
             GrayscaleFilter(), ContrastFilter(), BrightnessFilter(),
             SharpenFilter(), BinarizeFilter(),
         )
         val executor = WorkflowExecutor(
-            RuntimeEnvironment.getApplication() as Application,
+            app,
+            repo,
+            FakePdfGenerator(),
         )
-        val app = RuntimeEnvironment.getApplication() as Application
-        app.getSharedPreferences("settings", 0).edit()
-            .putString("default_save_uri", Uri.fromFile(app.cacheDir).toString())
-            .apply()
         viewModel = ScannerViewModel(
             app,
             repo,
             com.docscanner.domain.scanner.ScannerManager(),
             pipeline,
-            fakeOcr,
-            fakePdf,
+            ocrManager,
             executor,
         )
     }
@@ -226,15 +223,15 @@ class ScannerViewModelTest {
     }
 
     @Test
-    fun `append mode sets isAppendMode flag`() {
-        viewModel.setExistingDocumentId(123L)
+    fun `append mode sets isAppendMode flag`() = runTest {
+        val docId = repo.createDocument("Append Test")
+        viewModel.setExistingDocumentId(docId)
         assertTrue(viewModel.uiState.value.isAppendMode)
     }
 
     @Test
     fun `append mode adds captured page to list`() = runTest {
         val docId = repo.createDocument("Append Test")
-        repo.updateDocumentOutputUri(docId, "file:///test/output.pdf")
         viewModel.setExistingDocumentId(docId)
 
         viewModel.onScannerResult(
@@ -259,42 +256,6 @@ class ScannerViewModelTest {
     }
 
     @Test
-    fun `default page size is A4`() {
-        assertEquals(PageSize.A4, viewModel.uiState.value.pageSize)
-    }
-
-    @Test
-    fun `set page size updates state`() {
-        viewModel.setPageSize(PageSize.LETTER)
-        assertEquals(PageSize.LETTER, viewModel.uiState.value.pageSize)
-    }
-
-    @Test
-    fun `set page size persists in prefs`() {
-        viewModel.setPageSize(PageSize.LEGAL)
-        viewModel.setPageSize(PageSize.A5)
-        assertEquals(PageSize.A5, viewModel.uiState.value.pageSize)
-    }
-
-    @Test
-    fun `autoCorrectEnabled defaults to true`() {
-        assertTrue(viewModel.uiState.value.autoCorrectEnabled)
-    }
-
-    @Test
-    fun `toggleAutoCorrect flips and persists`() {
-        viewModel.toggleAutoCorrect()
-        assertFalse(viewModel.uiState.value.autoCorrectEnabled)
-        val prefs = RuntimeEnvironment.getApplication()
-            .getSharedPreferences("settings", 0)
-        assertFalse("should persist to prefs", prefs.getBoolean("auto_correct_pdf_name", true))
-
-        viewModel.toggleAutoCorrect()
-        assertTrue(viewModel.uiState.value.autoCorrectEnabled)
-        assertTrue("should persist to prefs", prefs.getBoolean("auto_correct_pdf_name", false))
-    }
-
-    @Test
     fun `showDiscardDialog sets state`() {
         assertFalse(viewModel.uiState.value.showDiscardDialog)
         viewModel.showDiscardDialog()
@@ -306,5 +267,88 @@ class ScannerViewModelTest {
         viewModel.showDiscardDialog()
         viewModel.hideDiscardDialog()
         assertFalse(viewModel.uiState.value.showDiscardDialog)
+    }
+
+    @Test
+    fun `duplicate name shows overwrite dialog`() = runTest {
+        repo.createDocument("Existing Doc")
+        viewModel.updateDocumentName("Existing Doc")
+        val uri = createTempImageUri()
+        viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("Overwrite dialog should be shown for duplicate name", viewModel.uiState.value.showOverwriteDialog)
+        assertFalse("Should not be saving when waiting for overwrite confirmation", viewModel.uiState.value.isSaving)
+    }
+
+    @Test
+    fun `overwrite confirmed replaces existing document`() = runTest {
+        repo.createDocument("Existing Doc")
+        viewModel.updateDocumentName("Existing Doc")
+        val uri = createTempImageUri()
+        viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("Overwrite dialog should be shown", viewModel.uiState.value.showOverwriteDialog)
+
+        viewModel.confirmOverwrite()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("Tags dialog should show after confirm", viewModel.uiState.value.showTagsDialog)
+
+        viewModel.completeSave()
+        assertNotNull("savedDocumentId should be set after completeSave", viewModel.uiState.value.savedDocumentId)
+        val docs = repo.observeDocuments().first()
+        assertEquals("Only one document should exist (replaced)", 1, docs.size)
+    }
+
+    @Test
+    fun `cancel overwrite aborts save`() = runTest {
+        repo.createDocument("Existing Doc")
+        viewModel.updateDocumentName("Existing Doc")
+        val uri = createTempImageUri()
+        viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("Overwrite dialog should be shown", viewModel.uiState.value.showOverwriteDialog)
+
+        viewModel.cancelOverwrite()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("Overwrite dialog should be dismissed", viewModel.uiState.value.showOverwriteDialog)
+        assertNull("Document should not be saved after cancel", viewModel.uiState.value.savedDocumentId)
+    }
+
+    @Test
+    fun `unique name does not trigger overwrite dialog`() = runTest {
+        repo.createDocument("Other Doc")
+        viewModel.updateDocumentName("My Unique Doc")
+        val uri = createTempImageUri()
+        viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("Overwrite dialog should not show for unique name", viewModel.uiState.value.showOverwriteDialog)
+        assertTrue("Tags dialog should show after save", viewModel.uiState.value.showTagsDialog)
+
+        viewModel.completeSave()
+        assertNotNull("Document should be saved normally", viewModel.uiState.value.savedDocumentId)
+    }
+
+    @Test
+    fun `per-doc page size is passed to createDocument`() = runTest {
+        viewModel.setExportPageSize(com.docscanner.domain.pdf.PageSize.A3)
+        viewModel.updateDocumentName("PageSizeTest")
+        val uri = createTempImageUri()
+        viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
+        viewModel.confirmNameAndSave()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.completeSave()
+        val savedId = viewModel.uiState.value.savedDocumentId ?: error("No saved document")
+        val doc = repo.getDocument(savedId)
+        assertNotNull(doc)
+        assertEquals("PageSize should be A3", "A3", doc!!.pageSize)
     }
 }

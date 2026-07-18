@@ -62,8 +62,8 @@ open class ScannerManager @Inject constructor() {
             }
 
             try {
-                val imageUri = pages.first().imageUri
-                continuation.resume(ScannerResult.PageCaptured(imageUri))
+                val imageUris = pages.map { it.imageUri }
+                continuation.resume(ScannerResult.MultiplePagesCaptured(imageUris))
             } catch (e: Exception) {
                 continuation.resume(ScannerResult.Error(e))
             }

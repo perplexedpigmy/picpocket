@@ -8,20 +8,18 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Tag
 import com.docscanner.data.model.TriggerEvent
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.data.workflow.WorkflowExecutor
-import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.filter.FilterPipeline
 import com.docscanner.domain.filter.FilterType
-import com.docscanner.domain.ocr.OcrEngine
+import com.docscanner.domain.ocr.OcrManager
 import com.docscanner.domain.pdf.PageSize
-import com.docscanner.domain.pdf.PdfGenerator
-import com.docscanner.domain.pdf.PdfResult
+import com.docscanner.domain.scan.QualityTier
 import com.docscanner.domain.scanner.ScannerManager
 import com.docscanner.domain.scanner.ScannerResult
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -35,8 +33,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 import java.io.FileOutputStream
+import java.net.URI
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -57,17 +55,17 @@ data class ScannerUiState(
     val showFilterSheet: Boolean = false,
     val scanError: String? = null,
     val saveError: String? = null,
-    val savedDocumentId: Long? = null,
+    val savedDocumentId: DocumentId? = null,
     val pendingIntentSender: IntentSender? = null,
     val isAppendMode: Boolean = false,
     val appendPageCount: Int = 0,
-    val pageSize: PageSize = PageSize.A4,
     val showTagsDialog: Boolean = false,
-    val showOverwriteDialog: Boolean = false,
     val showDiscardDialog: Boolean = false,
-    val showSaveFolderPicker: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
-    val autoCorrectEnabled: Boolean = true,
+    val qualityTier: QualityTier = QualityTier.BEST,
+    val exportPageSize: PageSize = PageSize.A4,
+    val showOverwriteDialog: Boolean = false,
+    val overwriteTargetName: String = "",
 )
 
 @HiltViewModel
@@ -76,17 +74,15 @@ class ScannerViewModel @Inject constructor(
     private val repository: DocumentRepository,
     private val scannerManager: ScannerManager,
     private val filterPipeline: FilterPipeline,
-    private val ocrEngine: OcrEngine,
-    @SearchablePdf private val searchablePdf: PdfGenerator,
+    private val ocrManager: OcrManager,
     private val workflowExecutor: WorkflowExecutor,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(ScannerUiState())
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
-    private val prefs = application.getSharedPreferences("settings", 0)
-    private var existingDocumentId: Long? = null
-    private var pendingDocumentId: Long? = null
+    private var existingDocumentId: DocumentId? = null
+    private var pendingDocumentId: DocumentId? = null
 
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
@@ -100,24 +96,21 @@ class ScannerViewModel @Inject constructor(
     init {
         val now = LocalDateTime.now()
         val formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmm")
-        val savedSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
-        val pageSize = try { PageSize.valueOf(savedSize) } catch (_: Exception) { PageSize.A4 }
-        val autoCorrect = prefs.getBoolean("auto_correct_pdf_name", true)
+        val prefs = application.getSharedPreferences("settings", 0)
+        val savedTierOrdinal = prefs.getInt("quality_tier", 0)
+        val defaultTier = QualityTier.entries.getOrNull(savedTierOrdinal) ?: QualityTier.BEST
+        val savedPageSize = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
+        val defaultPageSize = try { PageSize.valueOf(savedPageSize) } catch (_: Exception) { PageSize.A4 }
         _uiState.update { it.copy(
             documentName = "Scan_${now.format(formatter)}",
-            pageSize = pageSize,
-            autoCorrectEnabled = autoCorrect,
+            qualityTier = defaultTier,
+            exportPageSize = defaultPageSize,
         ) }
     }
 
-    fun setExistingDocumentId(id: Long) {
+    fun setExistingDocumentId(id: DocumentId) {
         existingDocumentId = id
         _uiState.update { it.copy(isAppendMode = true) }
-    }
-
-    fun setPageSize(size: PageSize) {
-        prefs.edit().putString("page_size", size.name).apply()
-        _uiState.update { it.copy(pageSize = size) }
     }
 
     fun getScanIntentSender(activity: Activity) {
@@ -157,15 +150,16 @@ class ScannerViewModel @Inject constructor(
                     viewModelScope.launch {
                         _uiState.update { it.copy(isSaving = true, saveError = null) }
                         try {
-                            val app = getApplication<Application>()
-                            saveNewPage(app, docId, page)
+                            saveNewPage(docId, page)
                         } catch (e: Exception) {
                             _uiState.update { it.copy(isSaving = false, saveError = e.message) }
                         }
                         _uiState.update { it.copy(isSaving = false) }
+                        launch { ocrManager.runOcr(docId) }
                     }
                 }
             }
+            is ScannerResult.MultiplePagesCaptured -> { }
             is ScannerResult.Cancelled -> {
                 Log.d("ScannerViewModel", "scanner cancelled")
             }
@@ -179,7 +173,14 @@ class ScannerViewModel @Inject constructor(
         Log.d("ScannerViewModel", "handleScannerIntent: data=$data")
         viewModelScope.launch {
             val result = scannerManager.handleResult(data)
-            onScannerResult(result)
+            when (result) {
+                is ScannerResult.MultiplePagesCaptured -> {
+                    for (uri in result.imageUris) {
+                        onScannerResult(ScannerResult.PageCaptured(uri))
+                    }
+                }
+                else -> onScannerResult(result)
+            }
         }
     }
 
@@ -210,21 +211,7 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun showNameDialog() {
-        val hasSaveUri = prefs.getString("default_save_uri", null) != null
-        if (hasSaveUri) {
-            _uiState.update { it.copy(showNameDialog = true) }
-        } else {
-            _uiState.update { it.copy(showSaveFolderPicker = true) }
-        }
-    }
-
-    fun hideSaveFolderPicker() {
-        _uiState.update { it.copy(showSaveFolderPicker = false) }
-    }
-
-    fun onSaveFolderPicked(uri: Uri) {
-        prefs.edit().putString("default_save_uri", uri.toString()).apply()
-        _uiState.update { it.copy(showSaveFolderPicker = false, showNameDialog = true) }
+        _uiState.update { it.copy(showNameDialog = true) }
     }
 
     fun hideNameDialog() {
@@ -243,10 +230,12 @@ class ScannerViewModel @Inject constructor(
         _uiState.update { it.copy(documentName = name) }
     }
 
-    fun toggleAutoCorrect() {
-        val new = !_uiState.value.autoCorrectEnabled
-        prefs.edit().putBoolean("auto_correct_pdf_name", new).apply()
-        _uiState.update { it.copy(autoCorrectEnabled = new) }
+    fun setQualityTier(tier: QualityTier) {
+        _uiState.update { it.copy(qualityTier = tier) }
+    }
+
+    fun setExportPageSize(pageSize: PageSize) {
+        _uiState.update { it.copy(exportPageSize = pageSize) }
     }
 
     fun showFilterSheet(pageIndex: Int) {
@@ -265,38 +254,9 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    private suspend fun saveNewPage(app: Application, documentId: Long, captured: CapturedPage) {
-        val pagesDir = File(app.cacheDir, "pages/$documentId")
-        pagesDir.mkdirs()
-
-        val bitmap = app.contentResolver.openInputStream(captured.imageUri)?.use { stream ->
-            BitmapFactory.decodeStream(stream)
-        } ?: return
-
-        val pageId = repository.addPage(documentId, "", fileSizeBytes = 0)
-        val pageFile = File(pagesDir, "$pageId.jpg")
-        FileOutputStream(pageFile).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-        }
-        repository.updatePageImageUri(pageId, Uri.fromFile(pageFile).toString())
-
-        val filteredBitmap = filterPipeline.apply(captured.filterTypes, bitmap)
-        val ocrResult = ocrEngine.recognize(filteredBitmap)
-        repository.updatePageOcrText(pageId, ocrResult.text)
-        bitmap.recycle()
-        filteredBitmap.recycle()
-
-        val allPages = repository.getPages(documentId)
-        val doc = repository.getDocument(documentId)
-        val outputUri = doc?.outputUri ?: return
-        val pageSize = _uiState.value.pageSize
-        val pdfResult = searchablePdf.generate(app, allPages, Uri.parse(outputUri), pageSize)
-        when (pdfResult) {
-            is PdfResult.Error -> throw pdfResult.exception
-            is PdfResult.Success -> {
-                repository.updateDocumentOutputUri(documentId, pdfResult.uri)
-            }
-        }
+    private suspend fun saveNewPage(documentId: DocumentId, captured: CapturedPage) {
+        val tier = _uiState.value.qualityTier
+        repository.addPage(documentId, captured.imageUri.toString(), fileSizeBytes = 0, qualityTier = tier.ordinal)
 
         _uiState.update { it.copy(appendPageCount = it.appendPageCount + 1) }
 
@@ -350,92 +310,33 @@ class ScannerViewModel @Inject constructor(
         val state = _uiState.value
         if (state.documentName.isBlank() || state.capturedPages.isEmpty()) return
 
-        val app = getApplication<Application>()
-        val docName = state.documentName
-        val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
-
-        if (defaultSaveUri == null) return
-
-        val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
-        val fileExists = dir?.findFile("${docName.replace(" ", "_")}.pdf")?.exists() == true
-
-        if (fileExists) {
-            _uiState.update { it.copy(showOverwriteDialog = true) }
-            return
-        }
-
         proceedWithSave()
     }
 
-    fun confirmOverwrite() {
-        _uiState.update { it.copy(showOverwriteDialog = false) }
-        proceedWithSave(overwrite = true)
-    }
-
-    fun cancelOverwrite() {
-        _uiState.update { it.copy(showOverwriteDialog = false) }
-    }
-
-    private fun proceedWithSave(overwrite: Boolean = false) {
+    private fun proceedWithSave() {
         val state = _uiState.value
         _uiState.update { it.copy(isSaving = true, saveError = null) }
 
         viewModelScope.launch {
             try {
-                val app = getApplication<Application>()
-
-                if (overwrite) {
-                    val existing = repository.getDocumentsByName(state.documentName)
-                    for (doc in existing) {
-                        File(app.cacheDir, "pages/${doc.id}").deleteRecursively()
+                val existing = repository.getDocumentsByName(state.documentName)
+                if (existing.isNotEmpty()) {
+                    _uiState.update {
+                        it.copy(isSaving = false, showOverwriteDialog = true, overwriteTargetName = state.documentName)
                     }
-                    repository.deleteDocumentsByName(state.documentName)
-
-                    val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
-                    if (defaultSaveUri != null) {
-                        val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
-                        dir?.findFile("${state.documentName.replace(" ", "_")}.pdf")?.delete()
-                    }
+                    return@launch
                 }
 
-                val documentId = repository.createDocument(state.documentName)
-                val pagesDir = File(app.cacheDir, "pages/$documentId")
-                pagesDir.mkdirs()
+                val documentId = repository.createDocument(state.documentName, qualityTier = state.qualityTier.ordinal, pageSize = state.exportPageSize.name)
 
                 for (captured in state.capturedPages) {
-                    val bitmap = app.contentResolver.openInputStream(captured.imageUri)?.use { stream ->
-                        BitmapFactory.decodeStream(stream)
-                    } ?: continue
-
-                    val pageId = repository.addPage(documentId, "", fileSizeBytes = 0)
-                    val pageFile = File(pagesDir, "$pageId.jpg")
-                    FileOutputStream(pageFile).use { out ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-                    }
-                    repository.updatePageImageUri(pageId, Uri.fromFile(pageFile).toString())
-
-                    val filteredBitmap = filterPipeline.apply(captured.filterTypes, bitmap)
-                    val ocrResult = ocrEngine.recognize(filteredBitmap)
-                    repository.updatePageOcrText(pageId, ocrResult.text)
-                    bitmap.recycle()
-                    filteredBitmap.recycle()
+                    repository.addPage(documentId, captured.imageUri.toString(), fileSizeBytes = 0, qualityTier = state.qualityTier.ordinal)
                 }
 
-                val pages = repository.getPages(documentId)
-                val pageSize = _uiState.value.pageSize
-                val outputUri = resolveOutputUri(app, state.documentName)
-                val pdfResult = searchablePdf.generate(app, pages, outputUri, pageSize)
+                pendingDocumentId = documentId
+                _uiState.update { it.copy(isSaving = false, showTagsDialog = true) }
 
-                when (pdfResult) {
-                    is PdfResult.Success -> {
-                        repository.updateDocumentOutputUri(documentId, pdfResult.uri)
-                        pendingDocumentId = documentId
-                        _uiState.update { it.copy(isSaving = false, showTagsDialog = true) }
-                    }
-                    is PdfResult.Error -> {
-                        _uiState.update { it.copy(isSaving = false, saveError = pdfResult.exception.message) }
-                    }
-                }
+                launch { ocrManager.runOcr(documentId) }
             } catch (e: Exception) {
                 _uiState.update { it.copy(isSaving = false, saveError = e.message) }
             }
@@ -458,15 +359,17 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    private fun resolveOutputUri(app: Application, docName: String): Uri {
-        val defaultSaveUri = prefs.getString("default_save_uri", null)?.let { Uri.parse(it) }
-            ?: error("default_save_uri must be set before saving")
-        val dir = DocumentFile.fromTreeUri(app, defaultSaveUri)
-        if (dir != null) {
-            return dir.createFile("application/pdf", docName.replace(" ", "_"))?.uri
-                ?: error("Failed to create file in save directory")
+    fun confirmOverwrite() {
+        val name = _uiState.value.overwriteTargetName
+        if (name.isBlank()) return
+        _uiState.update { it.copy(showOverwriteDialog = false, isSaving = true) }
+        viewModelScope.launch {
+            repository.deleteDocumentsByName(name)
+            proceedWithSave()
         }
-        val file = File(app.cacheDir, "${docName.replace(" ", "_")}.pdf")
-        return Uri.fromFile(file)
+    }
+
+    fun cancelOverwrite() {
+        _uiState.update { it.copy(showOverwriteDialog = false, isSaving = false) }
     }
 }

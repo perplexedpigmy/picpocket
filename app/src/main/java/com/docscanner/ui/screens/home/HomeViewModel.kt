@@ -1,16 +1,21 @@
 package com.docscanner.ui.screens.home
 
+import android.app.Application
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.docscanner.data.model.Document
+import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
+import com.docscanner.di.SearchablePdf
+import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.pdf.PdfGenerator
 import com.docscanner.ui.components.MatchMode
 import com.docscanner.util.ZipUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,7 +46,7 @@ data class HomeUiState(
     val documents: List<Document> = emptyList(),
     val isLoading: Boolean = true,
     val selectionMode: Boolean = false,
-    val selectedDocumentIds: Set<Long> = emptySet(),
+    val selectedDocumentIds: Set<DocumentId> = emptySet(),
     val showDeleteConfirmation: Boolean = false,
     val sortOrder: SortOrder = SortOrder.MODIFIED_DESC,
     val showRenameDialog: Boolean = false,
@@ -50,26 +55,33 @@ data class HomeUiState(
     val searchInContent: Boolean = false,
     val showTagsSheet: Boolean = false,
     val selectedTagIds: Set<Long> = emptySet(),
-    val documentTags: Map<Long, List<Tag>> = emptyMap(),
+    val documentTags: Map<DocumentId, List<Tag>> = emptyMap(),
     val showTagFilterSheet: Boolean = false,
     val filterTagIds: Set<Long> = emptySet(),
     val filterMatchMode: MatchMode = MatchMode.MATCH_ANY,
     val showShareSheet: Boolean = false,
     val shareFilteredDocs: Boolean = false,
+    val showExportDialog: Boolean = false,
+    val exportPageSize: PageSize = PageSize.A4,
+    val pendingExportDocIds: List<DocumentId> = emptyList(),
+    val showRenameOverwriteDialog: Boolean = false,
+    val renameOverwriteTargetName: String = "",
 )
 
 @HiltViewModel
 @OptIn(FlowPreview::class)
 class HomeViewModel @Inject constructor(
+    application: Application,
     private val repository: DocumentRepository,
-) : ViewModel() {
+    @SearchablePdf private val pdfGenerator: PdfGenerator,
+) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
     private val _sortOrder = MutableStateFlow(SortOrder.MODIFIED_DESC)
     private val _searchQuery = MutableStateFlow("")
     private val _searchInContent = MutableStateFlow(false)
-    private val _ocrMatchIds = MutableStateFlow<Set<Long>>(emptySet())
+    private val _ocrMatchIds = MutableStateFlow<Set<DocumentId>>(emptySet())
     private val _debouncedQuery = _searchQuery.debounce(300)
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
 
@@ -141,7 +153,7 @@ class HomeViewModel @Inject constructor(
                 val tagFiltered = if (tagIds.isEmpty()) filtered
                 else {
                     @Suppress("UNCHECKED_CAST")
-                    val dtm = tagMap as Map<Long, List<Tag>>
+                    val dtm = tagMap as Map<DocumentId, List<Tag>>
                     filtered.filter { doc ->
                         val docTagIds = dtm[doc.id].orEmpty().map { it.id }.toSet()
                         if (matchMode == MatchMode.MATCH_ALL) tagIds.all { it in docTagIds }
@@ -187,7 +199,7 @@ class HomeViewModel @Inject constructor(
         _sortOrder.value = order
     }
 
-    fun onDocumentLongPress(documentId: Long) {
+    fun onDocumentLongPress(documentId: DocumentId) {
         _uiState.update {
             it.copy(
                 selectionMode = true,
@@ -196,7 +208,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun onDocumentTap(documentId: Long): Boolean {
+    fun onDocumentTap(documentId: DocumentId): Boolean {
         val state = _uiState.value
         return if (state.selectionMode) {
             toggleSelection(documentId)
@@ -206,7 +218,7 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun toggleSelection(documentId: Long) {
+    fun toggleSelection(documentId: DocumentId) {
         _uiState.update { state ->
             val newSelection = if (documentId in state.selectedDocumentIds) {
                 state.selectedDocumentIds - documentId
@@ -285,9 +297,31 @@ class HomeViewModel @Inject constructor(
         val name = _uiState.value.renameText
         if (name.isBlank()) return
         viewModelScope.launch {
+            val existing = repository.getDocumentsByName(name)
+            val conflict = existing.firstOrNull { it.id != docId }
+            if (conflict != null) {
+                _uiState.update { it.copy(showRenameOverwriteDialog = true, renameOverwriteTargetName = name) }
+                return@launch
+            }
             repository.updateDocumentName(docId, name)
             hideRenameDialog()
         }
+    }
+
+    fun confirmRenameOverwrite() {
+        val docId = _uiState.value.selectedDocumentIds.firstOrNull() ?: return
+        val name = _uiState.value.renameOverwriteTargetName
+        if (name.isBlank()) return
+        _uiState.update { it.copy(showRenameOverwriteDialog = false) }
+        viewModelScope.launch {
+            repository.deleteDocumentsByName(name)
+            repository.updateDocumentName(docId, name)
+            hideRenameDialog()
+        }
+    }
+
+    fun cancelRenameOverwrite() {
+        _uiState.update { it.copy(showRenameOverwriteDialog = false) }
     }
 
     fun showTagsSheet() {
@@ -361,15 +395,63 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(showShareSheet = false, shareFilteredDocs = false) }
     }
 
+    fun showExportDialog() {
+        val ids = _uiState.value.selectedDocumentIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.update {
+            it.copy(
+                showExportDialog = true,
+                exportPageSize = readDefaultPageSize(),
+                pendingExportDocIds = ids,
+            )
+        }
+    }
+
+    private fun readDefaultPageSize(): PageSize {
+        val prefs = getApplication<Application>().getSharedPreferences("settings", 0)
+        val saved = prefs.getString("page_size", PageSize.A4.name) ?: PageSize.A4.name
+        return try { PageSize.valueOf(saved) } catch (_: Exception) { PageSize.A4 }
+    }
+
+    fun hideExportDialog() {
+        _uiState.update { it.copy(showExportDialog = false) }
+    }
+
+    fun setExportPageSize(pageSize: PageSize) {
+        _uiState.update { it.copy(exportPageSize = pageSize) }
+    }
+
+    fun exportPdf(context: Context, outputUri: Uri) {
+        val state = _uiState.value
+        val docId = state.pendingExportDocIds.firstOrNull() ?: return
+        viewModelScope.launch {
+            val doc = repository.getDocument(docId)
+            if (doc != null) {
+                val pages = repository.getPages(docId) ?: emptyList()
+                if (pages.isNotEmpty()) {
+                    val result = pdfGenerator.generate(context, pages, outputUri, state.exportPageSize)
+                }
+            }
+            val remaining = state.pendingExportDocIds.drop(1)
+            if (remaining.isNotEmpty()) {
+                _uiState.update { it.copy(pendingExportDocIds = remaining) }
+            } else {
+                _uiState.update { it.copy(showExportDialog = false, pendingExportDocIds = emptyList()) }
+                exitSelectionMode()
+            }
+        }
+    }
+
     fun shareViaSystem(context: Context) {
         val docs = getDocsToShare()
         if (docs.isEmpty()) return
-        val contentResolver = context.contentResolver
-
-        if (docs.size == 1) {
-            shareSingleDoc(context, docs.first())
-        } else {
-            shareMultipleDocs(context, docs, contentResolver)
+        viewModelScope.launch {
+            if (docs.size == 1) {
+                val pdfUri = generateTempPdf(context, docs.first()) ?: return@launch
+                sharePdf(context, pdfUri)
+            } else {
+                shareMultiplePdfs(context, docs)
+            }
         }
         if (!_uiState.value.shareFilteredDocs) exitSelectionMode()
     }
@@ -377,12 +459,8 @@ class HomeViewModel @Inject constructor(
     fun saveToDrive(context: Context, folderUri: Uri) {
         val docs = getDocsToShare()
         if (docs.isEmpty()) return
-        val app = context.applicationContext
-
-        if (docs.size == 1) {
-            copyToDrive(app, folderUri, docs.first())
-        } else {
-            copyMultipleToDrive(app, folderUri, docs)
+        viewModelScope.launch {
+            copyPdfsToDrive(context, folderUri, docs)
         }
         if (!_uiState.value.shareFilteredDocs) exitSelectionMode()
     }
@@ -396,37 +474,46 @@ class HomeViewModel @Inject constructor(
         }
         return ids.mapNotNull { id ->
             state.documents.find { it.id == id }
-        }.filter { it.outputUri != null }
-    }
-
-    private fun shareableUri(context: Context, uriStr: String): Uri {
-        val uri = Uri.parse(uriStr)
-        if (uri.scheme == "file") {
-            val file = File(uri.path!!)
-            return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         }
-        return uri
     }
 
-    private fun shareSingleDoc(context: Context, doc: Document) {
-        val uri = shareableUri(context, doc.outputUri!!)
+    private suspend fun generateTempPdf(context: Context, doc: Document): Uri? {
+        val pages = repository.getPages(doc.id)
+        if (pages.isEmpty()) return null
+        val tempDir = File(context.cacheDir, "exports")
+        tempDir.mkdirs()
+        val tempFile = File(tempDir, "${doc.id}.pdf")
+        val prefs = context.getSharedPreferences("settings", 0)
+        val docPageSize = doc.pageSize?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } }
+        val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
+        val result = pdfGenerator.generate(context, pages, Uri.fromFile(tempFile), pageSize)
+        return when (result) {
+            is com.docscanner.domain.pdf.PdfResult.Success -> Uri.fromFile(tempFile)
+            is com.docscanner.domain.pdf.PdfResult.Error -> null
+        }
+    }
+
+    private fun sharePdf(context: Context, pdfUri: Uri) {
+        val shareUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", File(pdfUri.path!!))
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_STREAM, shareUri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "Share PDF"))
     }
 
-    private fun shareMultipleDocs(context: Context, docs: List<Document>, contentResolver: ContentResolver) {
+    private suspend fun shareMultiplePdfs(context: Context, docs: List<Document>) {
         val baseName = zipBaseName()
-        val files = docs.map { doc ->
+        val uris = docs.mapNotNull { doc ->
+            val pdfUri = generateTempPdf(context, doc) ?: return@mapNotNull null
             val name = doc.name.replace(" ", "_") + ".pdf"
-            val uri = shareableUri(context, doc.outputUri!!)
-            name to uri
+            name to pdfUri
         }
+        if (uris.isEmpty()) return
+        val contentResolver = context.contentResolver
         val cacheDir = context.cacheDir
-        val zipFile = ZipUtil.create(cacheDir, baseName, files, contentResolver)
+        val zipFile = ZipUtil.create(cacheDir, baseName, uris, contentResolver)
         val zipUri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", zipFile)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/zip"
@@ -437,39 +524,44 @@ class HomeViewModel @Inject constructor(
         zipFile.delete()
     }
 
-    private fun copyToDrive(app: Context, folderUri: Uri, doc: Document) {
+    private suspend fun copyPdfsToDrive(context: Context, folderUri: Uri, docs: List<Document>) {
         try {
-            val folder = DocumentFile.fromTreeUri(app, folderUri)
-            if (folder == null || !folder.exists()) return
-            val sourceUri = shareableUri(app, doc.outputUri!!)
-            val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
-            val existing = folder.findFile(safeName)
-            if (existing != null) existing.delete()
-            val newFile = folder.createFile("application/pdf", safeName) ?: return
-            app.contentResolver.openInputStream(sourceUri)?.use { input ->
-                app.contentResolver.openOutputStream(newFile.uri)?.use { output ->
-                    input.copyTo(output)
-                }
+            if (docs.size == 1) {
+                copySinglePdfToDrive(context, folderUri, docs.first())
+            } else {
+                copyMultiplePdfsToDrive(context, folderUri, docs)
             }
         } catch (_: Exception) { }
     }
 
-    private fun copyMultipleToDrive(app: Context, folderUri: Uri, docs: List<Document>) {
-        try {
-            val parent = DocumentFile.fromTreeUri(app, folderUri) ?: return
-            val dirName = zipBaseName()
-            val dir = parent.createDirectory(dirName) ?: return
-            for (doc in docs) {
-                val sourceUri = shareableUri(app, doc.outputUri!!)
-                val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
-                val newFile = dir.createFile("application/pdf", safeName) ?: continue
-                app.contentResolver.openInputStream(sourceUri)?.use { input ->
-                    app.contentResolver.openOutputStream(newFile.uri)?.use { output ->
-                        input.copyTo(output)
-                    }
+    private suspend fun copySinglePdfToDrive(context: Context, folderUri: Uri, doc: Document) {
+        val pdfUri = generateTempPdf(context, doc) ?: return
+        val folder = DocumentFile.fromTreeUri(context, folderUri) ?: return
+        val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
+        val existing = folder.findFile(safeName)
+        if (existing != null) existing.delete()
+        val newFile = folder.createFile("application/pdf", safeName) ?: return
+        context.contentResolver.openInputStream(pdfUri)?.use { input ->
+            context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                input.copyTo(output)
+            }
+        }
+    }
+
+    private suspend fun copyMultiplePdfsToDrive(context: Context, folderUri: Uri, docs: List<Document>) {
+        val parent = DocumentFile.fromTreeUri(context, folderUri) ?: return
+        val dirName = zipBaseName()
+        val dir = parent.createDirectory(dirName) ?: return
+        for (doc in docs) {
+            val pdfUri = generateTempPdf(context, doc) ?: continue
+            val safeName = doc.name.replace(" ", "_").replace("/", "_") + ".pdf"
+            val newFile = dir.createFile("application/pdf", safeName) ?: continue
+            context.contentResolver.openInputStream(pdfUri)?.use { input ->
+                context.contentResolver.openOutputStream(newFile.uri)?.use { output ->
+                    input.copyTo(output)
                 }
             }
-        } catch (_: Exception) { }
+        }
     }
 
     private fun zipBaseName(): String {

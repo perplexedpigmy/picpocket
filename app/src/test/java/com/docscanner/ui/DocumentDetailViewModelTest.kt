@@ -2,13 +2,12 @@ package com.docscanner.ui
 
 import android.app.Application
 import android.content.Context
-import android.net.Uri
 import com.docscanner.data.FakeDocumentRepository
-import com.docscanner.data.model.Page
+import com.docscanner.data.store.DocumentStore
+import com.docscanner.domain.ocr.FakeOcrEngine
+import com.docscanner.domain.ocr.OcrManager
 import com.docscanner.domain.pdf.FakePdfGenerator
-import com.docscanner.domain.pdf.PdfPageRenderer
 import com.docscanner.ui.screens.detail.DocumentDetailViewModel
-import java.io.File
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -32,32 +31,23 @@ class DocumentDetailViewModelTest {
     val coroutineRule = MainCoroutineRule()
 
     private lateinit var repo: FakeDocumentRepository
-    private lateinit var fakePdf: FakePdfGenerator
     private lateinit var viewModel: DocumentDetailViewModel
-    private var documentId: Long = 0
+    private var documentId: String = ""
 
     @Before
     fun setUp() = runTest {
         repo = FakeDocumentRepository()
-        fakePdf = FakePdfGenerator()
         documentId = repo.createDocument("My Document")
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
-        repo.updateDocumentOutputUri(documentId, "file:///test/output.pdf")
-        val fakePageRenderer = object : PdfPageRenderer() {
-            override suspend fun renderAllPages(
-                context: Context,
-                pdfUri: Uri,
-                pages: List<Page>,
-                destDir: File,
-                onPageRendered: suspend (Long, String) -> Unit,
-            ) { }
-        }
+        val app = RuntimeEnvironment.getApplication() as Application
+        val store = DocumentStore(app)
         viewModel = DocumentDetailViewModel(
-            RuntimeEnvironment.getApplication() as Application,
+            app,
             repo,
-            fakePdf,
-            fakePageRenderer,
+            store,
+            FakePdfGenerator(),
+            OcrManager(FakeOcrEngine(), store),
         )
     }
 
@@ -108,18 +98,22 @@ class DocumentDetailViewModelTest {
     }
 
     @Test
-    fun `delete page removes it from pages list and regenerates PDF`() = runTest {
+    fun `toggle mark for deletion in edit mode`() = runTest {
         viewModel.loadDocument(documentId)
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         val pagesBefore = viewModel.uiState.value.pages
         assertEquals(2, pagesBefore.size)
 
-        viewModel.deletePage(pagesBefore[0].id)
-        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        viewModel.toggleEditMode()
+        assertTrue(viewModel.uiState.value.isEditMode)
 
-        assertEquals(1, viewModel.uiState.value.pages.size)
-        assertEquals(1, fakePdf.generatedPages.lastOrNull()?.size)
+        val page = pagesBefore[0]
+        viewModel.toggleMarkForDeletion(page.filename)
+        assertTrue(viewModel.uiState.value.markedForDeletion.contains(page.filename))
+
+        viewModel.toggleMarkForDeletion(page.filename)
+        assertFalse(viewModel.uiState.value.markedForDeletion.contains(page.filename))
     }
 
     @Test
@@ -141,5 +135,125 @@ class DocumentDetailViewModelTest {
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         assertNull(viewModel.uiState.value.document)
+    }
+
+    @Test
+    fun `rename to existing name shows rename overwrite dialog`() = runTest {
+        repo.createDocument("Target Name")
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.showRenameDialog()
+        viewModel.updateRenameText("Target Name")
+        viewModel.renameDocument()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("renameOverwriteDialog should show when rename targets existing name",
+            viewModel.uiState.value.showRenameOverwriteDialog)
+    }
+
+    @Test
+    fun `confirm rename overwrite renames and hides dialog`() = runTest {
+        repo.createDocument("Target Name")
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.showRenameDialog()
+        viewModel.updateRenameText("Target Name")
+        viewModel.renameDocument()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("renameOverwriteDialog should show", viewModel.uiState.value.showRenameOverwriteDialog)
+
+        viewModel.confirmRenameOverwrite()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("Dialog should be dismissed after confirm", viewModel.uiState.value.showRenameOverwriteDialog)
+        val doc = repo.getDocument(documentId)
+        assertEquals("Document should be renamed to target", "Target Name", doc?.name)
+    }
+
+    @Test
+    fun `cancel rename overwrite dismisses dialog`() = runTest {
+        repo.createDocument("Target Name")
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.showRenameDialog()
+        viewModel.updateRenameText("Target Name")
+        viewModel.renameDocument()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.cancelRenameOverwrite()
+        assertFalse("Dialog should be dismissed after cancel", viewModel.uiState.value.showRenameOverwriteDialog)
+    }
+
+    @Test
+    fun `renaming to unique name does not trigger overwrite dialog`() = runTest {
+        repo.createDocument("Unrelated Name")
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.showRenameDialog()
+        viewModel.updateRenameText("Totally New Name")
+        viewModel.renameDocument()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse("Overwrite dialog should not show for unique rename",
+            viewModel.uiState.value.showRenameOverwriteDialog)
+        val doc = repo.getDocument(documentId)
+        assertEquals("Totally New Name", doc?.name)
+    }
+
+    @Test
+    fun `empty delete shows warning when all pages marked`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleEditMode()
+        assertTrue(viewModel.uiState.value.isEditMode)
+
+        val pages = viewModel.uiState.value.reorderablePages
+        assertTrue("Should have pages to mark", pages.size >= 2)
+        pages.forEach { page ->
+            viewModel.toggleMarkForDeletion(page.filename)
+        }
+
+        viewModel.toggleEditMode()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue("Empty delete dialog should show when all pages marked",
+            viewModel.uiState.value.showEmptyDeleteDialog)
+    }
+
+    @Test
+    fun `empty delete warning dismissed by confirm`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleEditMode()
+        val pages = viewModel.uiState.value.reorderablePages
+        pages.forEach { viewModel.toggleMarkForDeletion(it.filename) }
+        viewModel.toggleEditMode()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("Empty delete dialog should show", viewModel.uiState.value.showEmptyDeleteDialog)
+
+        viewModel.confirmEmptyDelete()
+        assertFalse("Dialog should dismiss", viewModel.uiState.value.showEmptyDeleteDialog)
+    }
+
+    @Test
+    fun `empty delete warning dismissed by cancel`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.toggleEditMode()
+        val pages = viewModel.uiState.value.reorderablePages
+        pages.forEach { viewModel.toggleMarkForDeletion(it.filename) }
+        viewModel.toggleEditMode()
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue("Empty delete dialog should show", viewModel.uiState.value.showEmptyDeleteDialog)
+
+        viewModel.cancelEmptyDelete()
+        assertFalse("Dialog should dismiss", viewModel.uiState.value.showEmptyDeleteDialog)
     }
 }

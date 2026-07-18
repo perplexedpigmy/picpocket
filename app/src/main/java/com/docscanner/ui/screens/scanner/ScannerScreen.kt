@@ -23,8 +23,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -38,6 +39,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -70,16 +72,18 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.docscanner.data.model.DocumentId
 import com.docscanner.domain.filter.FilterType
 import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.components.TagSelectorSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScannerScreen(
-    documentId: Long? = null,
+    documentId: DocumentId? = null,
     onNavigateBack: () -> Unit,
-    onDocumentSaved: (Long) -> Unit,
+    onDocumentSaved: (DocumentId) -> Unit,
     viewModel: ScannerViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -99,22 +103,23 @@ fun ScannerScreen(
         }
     }
 
+    LaunchedEffect(state.isAppendMode) {
+        if (state.isAppendMode) {
+            if (ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                viewModel.getScanIntentSender(context)
+            } else {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
         viewModel.handleScannerIntent(result.data)
-    }
-
-    val saveFolderPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { uri ->
-        if (uri != null) viewModel.onSaveFolderPicked(uri)
-    }
-
-    LaunchedEffect(state.showSaveFolderPicker) {
-        if (state.showSaveFolderPicker) {
-            saveFolderPicker.launch(null)
-        }
     }
 
     LaunchedEffect(state.pendingIntentSender) {
@@ -133,10 +138,8 @@ fun ScannerScreen(
         }
     }
 
-    var showPageSizeMenu by remember { mutableStateOf(false) }
-
     val hasPages = state.capturedPages.isNotEmpty() && !state.isAppendMode
-    val dialogShowing = state.showNameDialog || state.showFilterSheet || state.showTagsDialog || state.showOverwriteDialog || state.showDiscardDialog
+    val dialogShowing = state.showNameDialog || state.showFilterSheet || state.showTagsDialog || state.showDiscardDialog
 
     BackHandler(enabled = hasPages && !dialogShowing) {
         viewModel.showDiscardDialog()
@@ -166,6 +169,24 @@ fun ScannerScreen(
                 },
             )
         },
+        floatingActionButton = {
+            if (!state.isSaving) {
+                FloatingActionButton(
+                    onClick = {
+                        if (ContextCompat.checkSelfPermission(
+                                context, Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            viewModel.getScanIntentSender(context)
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    },
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Scan")
+                }
+            }
+        },
     ) { padding ->
         Column(
             modifier = Modifier
@@ -178,74 +199,13 @@ fun ScannerScreen(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator()
                         Spacer(Modifier.height(16.dp))
-                        Text("Processing pages, running OCR, generating PDF...")
+                        Text("Saving pages...")
                     }
                 }
             } else {
-                if (state.isAppendMode) {
-                    Text(
-                        "Pages are auto-saved to your document",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-
-                Button(
-                    onClick = {
-                        if (ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.CAMERA
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            viewModel.getScanIntentSender(context)
-                        } else {
-                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !state.isScanning && !state.isSaving,
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        if (state.isAppendMode) "Scan Next Page"
-                        else if (state.capturedPages.isEmpty()) "Scan First Page"
-                        else "Add Another Page"
-                    )
-                }
-
                 if (state.isScanning) {
-                    Spacer(Modifier.height(8.dp))
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                if (state.capturedPages.isEmpty()) {
-                    Box {
-                        OutlinedButton(
-                            onClick = { showPageSizeMenu = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Page size: ${state.pageSize.shortLabel}")
-                        }
-                        DropdownMenu(
-                            expanded = showPageSizeMenu,
-                            onDismissRequest = { showPageSizeMenu = false },
-                        ) {
-                            PageSize.entries.forEach { size ->
-                                DropdownMenuItem(
-                                    text = { Text(size.label) },
-                                    onClick = {
-                                        viewModel.setPageSize(size)
-                                        showPageSizeMenu = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(8.dp))
                 }
 
                 if (state.scanError != null) {
@@ -261,8 +221,8 @@ fun ScannerScreen(
                 if (state.capturedPages.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            if (state.isAppendMode) "Tap the button above to add a new page"
-                            else "Tap the button above to start scanning",
+                            if (state.isAppendMode) "Tap + to add a new page"
+                            else "Tap + to scan your first page",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                         )
@@ -275,8 +235,10 @@ fun ScannerScreen(
                     )
                     Spacer(Modifier.height(8.dp))
 
-                    LazyRow(
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(164.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(4.dp),
                     ) {
                         itemsIndexed(state.capturedPages) { index, page ->
@@ -285,7 +247,7 @@ fun ScannerScreen(
                             }
                             Card(
                                 modifier = Modifier
-                                    .width(160.dp)
+                                    .fillMaxWidth()
                                     .aspectRatio(0.7f),
                             ) {
                                 Box {
@@ -354,6 +316,7 @@ fun ScannerScreen(
     }
 
     if (state.showNameDialog) {
+        var showQualityMenu by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { viewModel.hideNameDialog() },
             title = { Text("Name your document") },
@@ -366,7 +329,6 @@ fun ScannerScreen(
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             imeAction = ImeAction.Done,
-                            autoCorrectEnabled = state.autoCorrectEnabled,
                         ),
                         keyboardActions = KeyboardActions(
                             onDone = {
@@ -376,17 +338,66 @@ fun ScannerScreen(
                         ),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(12.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Auto-correct", style = MaterialTheme.typography.bodySmall)
-                        Switch(
-                            checked = state.autoCorrectEnabled,
-                            onCheckedChange = { viewModel.toggleAutoCorrect() },
+                        Text(
+                            "Quality",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
                         )
+                        Box {
+                            OutlinedButton(onClick = { showQualityMenu = true }) {
+                                Text(state.qualityTier.label)
+                            }
+                            DropdownMenu(
+                                expanded = showQualityMenu,
+                                onDismissRequest = { showQualityMenu = false },
+                            ) {
+                                QualityTier.entries.forEach { tier ->
+                                    DropdownMenuItem(
+                                        text = { Text("${tier.label} (${tier.estimatedReduction})") },
+                                        onClick = {
+                                            viewModel.setQualityTier(tier)
+                                            showQualityMenu = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    var showPageSizeMenu by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Page Size",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Box {
+                            OutlinedButton(onClick = { showPageSizeMenu = true }) {
+                                Text(state.exportPageSize.shortLabel)
+                            }
+                            DropdownMenu(
+                                expanded = showPageSizeMenu,
+                                onDismissRequest = { showPageSizeMenu = false },
+                            ) {
+                                PageSize.entries.forEach { size ->
+                                    DropdownMenuItem(
+                                        text = { Text(size.label) },
+                                        onClick = {
+                                            viewModel.setExportPageSize(size)
+                                            showPageSizeMenu = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             },
@@ -403,26 +414,6 @@ fun ScannerScreen(
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.hideNameDialog() }) {
-                    Text("Cancel")
-                }
-            },
-        )
-    }
-
-    if (state.showOverwriteDialog) {
-        AlertDialog(
-            onDismissRequest = { viewModel.cancelOverwrite() },
-            title = { Text("Overwrite file?") },
-            text = {
-                Text("A file named \"${state.documentName}.pdf\" already exists. Overwrite it?")
-            },
-            confirmButton = {
-                TextButton(onClick = { viewModel.confirmOverwrite() }) {
-                    Text("Overwrite")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.cancelOverwrite() }) {
                     Text("Cancel")
                 }
             },
@@ -482,6 +473,24 @@ fun ScannerScreen(
         }
     }
 
+    if (state.showOverwriteDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelOverwrite() },
+            title = { Text("Overwrite document?") },
+            text = { Text("A document named \"${state.overwriteTargetName}\" already exists. Overwrite?") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmOverwrite() }) {
+                    Text("Overwrite")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelOverwrite() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     if (state.showTagsDialog) {
         TagSelectorSheet(
             allTags = allTags,
@@ -492,6 +501,4 @@ fun ScannerScreen(
             onDismiss = { viewModel.completeSave() },
         )
     }
-
-
 }

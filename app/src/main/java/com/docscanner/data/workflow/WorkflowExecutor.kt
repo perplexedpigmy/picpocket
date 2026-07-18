@@ -10,6 +10,10 @@ import com.docscanner.data.model.AutomationConfig
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.TagAutomation
 import com.docscanner.data.model.WorkflowApp
+import com.docscanner.data.repository.DocumentRepository
+import com.docscanner.di.SearchablePdf
+import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.pdf.PdfGenerator
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -17,12 +21,30 @@ import javax.inject.Singleton
 @Singleton
 class WorkflowExecutor @Inject constructor(
     private val app: Application,
+    private val repository: DocumentRepository,
+    @SearchablePdf private val pdfGenerator: PdfGenerator,
 ) {
 
-    fun execute(document: Document, automations: List<TagAutomation>) {
-        val pdfUri = document.outputUri ?: return
+    suspend fun execute(document: Document, automations: List<TagAutomation>) {
         for (automation in automations) {
+            val pdfUri = generateTempPdf(document) ?: continue
             executeOne(document, pdfUri, automation)
+        }
+    }
+
+    private suspend fun generateTempPdf(document: Document): String? {
+        val pages = repository.getPages(document.id)
+        if (pages.isEmpty()) return null
+        val tempDir = File(app.cacheDir, "workflow_exports")
+        tempDir.mkdirs()
+        val tempFile = File(tempDir, "${document.id}.pdf")
+        val prefs = app.getSharedPreferences("settings", 0)
+        val docPageSize = document.pageSize?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } }
+        val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
+        val result = pdfGenerator.generate(app, pages, Uri.fromFile(tempFile), pageSize)
+        return when (result) {
+            is com.docscanner.domain.pdf.PdfResult.Success -> Uri.fromFile(tempFile).toString()
+            is com.docscanner.domain.pdf.PdfResult.Error -> null
         }
     }
 

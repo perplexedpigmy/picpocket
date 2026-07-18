@@ -2,8 +2,10 @@ package com.docscanner.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.navArgument
 import com.docscanner.ui.screens.detail.DocumentDetailScreen
 import com.docscanner.ui.screens.home.HomeScreen
 import com.docscanner.ui.screens.scanner.ScannerScreen
@@ -22,9 +24,9 @@ object Routes {
     const val DONATE = "donate"
     const val TAGS = "tags"
 
-    fun documentDetail(documentId: Long) = "document/$documentId"
-    fun pageViewer(documentId: Long, pageIndex: Int) = "viewer/$documentId/$pageIndex"
-    fun appendScanner(documentId: Long) = "scanner/$documentId"
+    fun documentDetail(documentId: String) = "document/$documentId"
+    fun pageViewer(documentId: String, pageIndex: Int) = "viewer/$documentId/$pageIndex"
+    fun appendScanner(documentId: String) = "scanner/$documentId"
 }
 
 @Composable
@@ -46,44 +48,50 @@ fun DocScannerNavGraph(navController: NavHostController) {
                 },
             )
         }
-        composable(Routes.DOCUMENT_DETAIL) { backStackEntry ->
-            val documentId = backStackEntry.arguments?.getString("documentId")?.toLongOrNull()
-            if (documentId != null) {
-                DocumentDetailScreen(
-                    documentId = documentId,
-                    onNavigateBack = { navController.popBackStack() },
-                    onPageView = { docId, pageIndex ->
-                        navController.navigate(Routes.pageViewer(docId, pageIndex))
-                    },
-                    onAddPage = { docId ->
-                        navController.navigate(Routes.appendScanner(docId))
-                    },
-                )
-            }
+        composable(
+            route = Routes.DOCUMENT_DETAIL,
+            arguments = listOf(navArgument("documentId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val documentId = backStackEntry.arguments?.getString("documentId") ?: return@composable
+            DocumentDetailScreen(
+                documentId = documentId,
+                onNavigateBack = { navController.popBackStack() },
+                onPageView = { docId, pageIndex ->
+                    navController.navigate(Routes.pageViewer(docId, pageIndex))
+                },
+                onAddPage = { docId ->
+                    navController.navigate(Routes.appendScanner(docId))
+                },
+            )
         }
-        composable(Routes.PAGE_VIEWER) { backStackEntry ->
-            val documentId = backStackEntry.arguments?.getString("documentId")?.toLongOrNull()
-            val pageIndex = backStackEntry.arguments?.getString("pageIndex")?.toIntOrNull() ?: 0
-            if (documentId != null) {
-                PageViewerScreen(
-                    documentId = documentId,
-                    initialPageIndex = pageIndex,
-                    onNavigateBack = { navController.popBackStack() },
-                )
-            }
+        composable(
+            route = Routes.PAGE_VIEWER,
+            arguments = listOf(
+                navArgument("documentId") { type = NavType.StringType },
+                navArgument("pageIndex") { type = NavType.IntType },
+            ),
+        ) { backStackEntry ->
+            val documentId = backStackEntry.arguments?.getString("documentId") ?: return@composable
+            val pageIndex = backStackEntry.arguments?.getInt("pageIndex") ?: 0
+            PageViewerScreen(
+                documentId = documentId,
+                initialPageIndex = pageIndex,
+                onNavigateBack = { navController.popBackStack() },
+            )
         }
-        composable(Routes.APPEND_SCANNER) { backStackEntry ->
-            val documentId = backStackEntry.arguments?.getString("documentId")?.toLongOrNull()
-            if (documentId != null) {
-                ScannerScreen(
-                    documentId = documentId,
-                    onNavigateBack = { navController.popBackStack() },
-                    onDocumentSaved = { docId ->
-                        navController.popBackStack()
-                        navController.navigate(Routes.pageViewer(docId, 0))
-                    },
-                )
-            }
+        composable(
+            route = Routes.APPEND_SCANNER,
+            arguments = listOf(navArgument("documentId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val documentId = backStackEntry.arguments?.getString("documentId") ?: return@composable
+            ScannerScreen(
+                documentId = documentId,
+                onNavigateBack = { navController.popBackStack() },
+                onDocumentSaved = { docId ->
+                    navController.popBackStack()
+                    navController.navigate(Routes.pageViewer(docId, 0))
+                },
+            )
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(

@@ -1,5 +1,9 @@
 package com.docscanner.ui.screens.home
 
+import android.app.Activity
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -45,6 +49,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -52,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,8 +73,10 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Tag
+import com.docscanner.domain.pdf.PageSize
 import com.docscanner.ui.components.MatchMode
 import com.docscanner.ui.components.ShareOptionsSheet
+import com.docscanner.data.model.DocumentId
 import com.docscanner.ui.components.TagChip
 import com.docscanner.ui.components.TagSelectorSheet
 import com.docscanner.ui.theme.TagColors
@@ -80,7 +88,7 @@ import java.util.Locale
 @Composable
 fun HomeScreen(
     onScanClick: () -> Unit,
-    onDocumentClick: (Long) -> Unit,
+    onDocumentClick: (DocumentId) -> Unit,
     onSettingsClick: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
@@ -89,6 +97,22 @@ fun HomeScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val allTags by viewModel.allTags.collectAsState()
+
+    val exportPdfLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportPdf(context, uri)
+        }
+    }
+
+    LaunchedEffect(state.pendingExportDocIds) {
+        if (state.pendingExportDocIds.isNotEmpty() && !state.showExportDialog) {
+            val doc = state.documents.find { it.id == state.pendingExportDocIds.first() }
+            val name = doc?.name?.replace(" ", "_") ?: "document"
+            exportPdfLauncher.launch("${name}.pdf")
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -121,6 +145,9 @@ fun HomeScreen(
                         }
                         IconButton(onClick = { viewModel.showShareSheet() }) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
+                        }
+                        IconButton(onClick = { viewModel.showExportDialog() }) {
+                            Icon(Icons.Default.Description, contentDescription = "Export as PDF")
                         }
                         IconButton(onClick = { viewModel.showDeleteConfirmation() }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete selected")
@@ -379,6 +406,24 @@ fun HomeScreen(
         )
     }
 
+    if (state.showRenameOverwriteDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.cancelRenameOverwrite() },
+            title = { Text("Overwrite document?") },
+            text = { Text("A document named \"${state.renameOverwriteTargetName}\" already exists. Overwrite?") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmRenameOverwrite() }) {
+                    Text("Overwrite")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.cancelRenameOverwrite() }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     if (state.showShareSheet) {
         ShareOptionsSheet(
             onDismiss = { viewModel.hideShareSheet() },
@@ -389,6 +434,53 @@ fun HomeScreen(
             onSaveToDrive = { uri ->
                 viewModel.saveToDrive(context, uri)
                 viewModel.hideShareSheet()
+            },
+        )
+    }
+
+    if (state.showExportDialog) {
+        var showPageSizeMenu by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { viewModel.hideExportDialog() },
+            title = { Text("Export as PDF") },
+            text = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Page Size", modifier = Modifier.weight(1f))
+                    Box {
+                        OutlinedButton(onClick = { showPageSizeMenu = true }) {
+                            Text(state.exportPageSize.label)
+                        }
+                        DropdownMenu(
+                            expanded = showPageSizeMenu,
+                            onDismissRequest = { showPageSizeMenu = false },
+                        ) {
+                            PageSize.entries.forEach { size ->
+                                DropdownMenuItem(
+                                    text = { Text(size.label) },
+                                    onClick = {
+                                        viewModel.setExportPageSize(size)
+                                        showPageSizeMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.hideExportDialog()
+                }) {
+                    Text("Export")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.hideExportDialog() }) {
+                    Text("Cancel")
+                }
             },
         )
     }
@@ -443,12 +535,29 @@ private fun DocumentCard(
             )
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    text = document.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = document.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (!document.ocrComplete) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "OCR pending",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.tertiaryContainer,
+                                    RoundedCornerShape(4.dp),
+                                )
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = formatDate(document.updatedAt),

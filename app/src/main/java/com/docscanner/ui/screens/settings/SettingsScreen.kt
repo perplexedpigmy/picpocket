@@ -1,8 +1,5 @@
 package com.docscanner.ui.screens.settings
 
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,9 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.automirrored.filled.Label
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -36,7 +31,6 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -50,6 +44,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.theme.DarkMode
 import com.docscanner.ui.theme.Palette
 
@@ -63,12 +58,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     var showPageSizeMenu by remember { mutableStateOf(false) }
-
-    val folderPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        uri?.let { viewModel.setDefaultSaveUri(it) }
-    }
+    var showQualityMenu by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -235,19 +225,35 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            "Default Save Location",
+                            "Default Scan Quality",
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f),
                         )
-                        OutlinedButton(onClick = { folderPickerLauncher.launch(null) }) {
-                            Icon(Icons.Default.Folder, contentDescription = null)
-                            Text("  Change Folder")
+                        Box {
+                            OutlinedButton(onClick = { showQualityMenu = true }) {
+                                Text(state.qualityTier.label)
+                            }
+                            DropdownMenu(
+                                expanded = showQualityMenu,
+                                onDismissRequest = { showQualityMenu = false },
+                            ) {
+                                QualityTier.entries.forEach { tier ->
+                                    DropdownMenuItem(
+                                        text = { Text("${tier.label} (${tier.estimatedReduction})") },
+                                        onClick = {
+                                            viewModel.setQualityTier(tier)
+                                            showQualityMenu = false
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(4.dp))
                     Text(
-                        state.defaultSaveLabel,
-                        style = MaterialTheme.typography.bodyMedium,
+                        state.qualityTier.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -285,30 +291,6 @@ fun SettingsScreen(
             }
 
                 Spacer(Modifier.height(16.dp))
-
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Cache", style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                "View and clear viewer cache",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        OutlinedButton(
-                            onClick = { viewModel.loadCacheInfo() },
-                        ) {
-                            Text("Check Cache")
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
 
             Card(
                 modifier = Modifier
@@ -354,49 +336,4 @@ fun SettingsScreen(
         }
     }
 
-    when (val cs = state.cleanupState) {
-        is CleanupState.CACHE_INFO -> {
-            AlertDialog(
-                onDismissRequest = { viewModel.dismissCleanupDone() },
-                title = { Text("Viewer Cache") },
-                text = {
-                    Column {
-                        Text("${cs.entries.size} docs cached, ${cs.totalBytes / 1024} KB total")
-                        Spacer(Modifier.height(8.dp))
-                        cs.entries.forEach { entry ->
-                            Text(
-                                "${entry.docName}: ${entry.pageCount}p, ${entry.bytes / 1024} KB",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        viewModel.confirmCleanCache()
-                    }) {
-                        Text("Clear All")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.dismissCleanupDone() }) {
-                        Text("Close")
-                    }
-                },
-            )
-        }
-        is CleanupState.DONE -> {
-            AlertDialog(
-                onDismissRequest = { viewModel.dismissCleanupDone() },
-                title = { Text("Done") },
-                text = { Text(cs.message) },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.dismissCleanupDone() }) {
-                        Text("OK")
-                    }
-                },
-            )
-        }
-        is CleanupState.IDLE -> {}
-    }
 }

@@ -3,6 +3,7 @@ package com.docscanner.ui.screens.viewer
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
 import com.docscanner.data.repository.DocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,9 +29,9 @@ class PageViewerViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ViewerUiState())
     val uiState: StateFlow<ViewerUiState> = _uiState.asStateFlow()
 
-    private var documentId: Long = 0
+    private var documentId: DocumentId = ""
 
-    fun loadPages(docId: Long, initialPageIndex: Int = 0) {
+    fun loadPages(docId: DocumentId, initialPageIndex: Int = 0) {
         documentId = docId
         _uiState.update { it.copy(currentIndex = initialPageIndex) }
         viewModelScope.launch {
