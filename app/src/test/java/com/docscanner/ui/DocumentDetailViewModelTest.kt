@@ -242,7 +242,7 @@ class DocumentDetailViewModelTest {
     }
 
     @Test
-    fun `empty delete warning dismissed by cancel`() = runTest {
+    fun `cancel empty delete dismisses dialog`() = runTest {
         viewModel.loadDocument(documentId)
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
@@ -255,5 +255,19 @@ class DocumentDetailViewModelTest {
 
         viewModel.cancelEmptyDelete()
         assertFalse("Dialog should dismiss", viewModel.uiState.value.showEmptyDeleteDialog)
+    }
+
+    @Test
+    fun `rescanPage handles failure gracefully`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        repo.failRescanPage = true
+
+        viewModel.rescanPage(pageNumber = 1, imageUri = "content://fake.jpg")
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.showRescanProgress)
+        assertNull(viewModel.uiState.value.rescanPageNumber)
     }
 }

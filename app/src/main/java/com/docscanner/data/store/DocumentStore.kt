@@ -176,6 +176,25 @@ class DocumentStore @Inject constructor(
         Result.success((doc.pages.maxOfOrNull { it.pageNumber } ?: 0) + 1)
     }
 
+    suspend fun replacePageImage(
+        documentId: String,
+        pageNumber: Int,
+        fileSizeBytes: Long,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
+        val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
+        if (idx < 0) return@withContext Result.failure(Exception("Page $pageNumber not found"))
+        doc.pages[idx] = doc.pages[idx].copy(
+            fileSizeBytes = fileSizeBytes,
+            ocrText = null,
+        )
+        writeMetadata(documentId, doc.copy(
+            pages = doc.pages,
+            ocrComplete = false,
+            updatedAt = System.currentTimeMillis(),
+        ))
+    }
+
     suspend fun totalFileSize(documentId: String): Result<Long> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         Result.success(doc.pages.sumOf { it.fileSizeBytes })

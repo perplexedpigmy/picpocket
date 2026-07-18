@@ -20,9 +20,11 @@ import com.docscanner.ui.components.MatchMode
 import com.docscanner.util.ZipUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -45,6 +47,8 @@ enum class SortOrder(val label: String) {
 data class HomeUiState(
     val documents: List<Document> = emptyList(),
     val isLoading: Boolean = true,
+    val showImportProgress: Boolean = false,
+    val importErrorMessage: String? = null,
     val selectionMode: Boolean = false,
     val selectedDocumentIds: Set<DocumentId> = emptySet(),
     val showDeleteConfirmation: Boolean = false,
@@ -87,6 +91,14 @@ class HomeViewModel @Inject constructor(
 
     private val _filterTagIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _filterMatchMode = MutableStateFlow(MatchMode.MATCH_ANY)
+
+    private val _importEvents = MutableSharedFlow<ImportEvent>()
+    val importEvents = _importEvents.asSharedFlow()
+
+    sealed interface ImportEvent {
+        data class NavigateToDocument(val documentId: DocumentId) : ImportEvent
+        data class ShowError(val message: String) : ImportEvent
+    }
 
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
@@ -381,6 +393,26 @@ class HomeViewModel @Inject constructor(
     fun setFilterMatchMode(mode: MatchMode) {
         _filterMatchMode.value = mode
         _uiState.update { it.copy(filterMatchMode = mode) }
+    }
+
+    fun importPdf(uri: Uri) {
+        _uiState.update { it.copy(showImportProgress = true, importErrorMessage = null) }
+        viewModelScope.launch {
+            repository.importPdf(uri)
+                .onSuccess { docId ->
+                    _uiState.update { it.copy(showImportProgress = false) }
+                    _importEvents.emit(ImportEvent.NavigateToDocument(docId))
+                }
+                .onFailure { error ->
+                    _uiState.update {
+                        it.copy(showImportProgress = false, importErrorMessage = error.message)
+                    }
+                }
+        }
+    }
+
+    fun dismissImportError() {
+        _uiState.update { it.copy(importErrorMessage = null) }
     }
 
     fun showShareSheet() {

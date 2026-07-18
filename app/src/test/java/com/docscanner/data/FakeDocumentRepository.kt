@@ -1,5 +1,6 @@
 package com.docscanner.data
 
+import android.net.Uri
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
@@ -162,6 +163,25 @@ class FakeDocumentRepository : DocumentRepository {
                 .map { docId }
         }.toSet()
         return Result.success(result)
+    }
+
+    var failImportPdf = false
+
+    override suspend fun importPdf(uri: Uri): Result<DocumentId> {
+        if (failImportPdf) return Result.failure(Exception("Import failed"))
+        val id = createDocument("Imported PDF").getOrThrow()
+        return Result.success(id)
+    }
+
+    var failRescanPage = false
+
+    override suspend fun rescanPage(documentId: DocumentId, pageNumber: Int, imageUri: String): Result<Unit> {
+        if (failRescanPage) return Result.failure(Exception("Rescan failed"))
+        val state = pageLists[documentId] ?: return Result.failure(Exception("Document not found"))
+        state.value = state.value.map {
+            if (it.pageNumber == pageNumber) it.copy(ocrText = null) else it
+        }
+        return Result.success(Unit)
     }
 
     override fun observeAllTags(): Flow<List<Tag>> = tags

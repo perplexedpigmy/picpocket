@@ -1,5 +1,6 @@
 package com.docscanner.data.repository
 
+import android.net.Uri
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
@@ -26,6 +27,8 @@ interface DocumentRepository {
     suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>): Result<Unit>
     suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>): Result<Unit>
     suspend fun searchDocumentsByOcrText(query: String): Result<Set<DocumentId>>
+    suspend fun importPdf(uri: Uri): Result<DocumentId>
+    suspend fun rescanPage(documentId: DocumentId, pageNumber: Int, imageUri: String): Result<Unit>
 
     fun observeAllTags(): Flow<List<Tag>>
     fun observeDocumentTags(documentId: DocumentId): Flow<List<Tag>>

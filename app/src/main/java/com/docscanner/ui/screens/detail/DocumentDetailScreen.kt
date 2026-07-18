@@ -1,9 +1,11 @@
 package com.docscanner.ui.screens.detail
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -34,6 +36,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -100,6 +103,27 @@ fun DocumentDetailScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.exportPdf(contextForExport, uri)
+        }
+    }
+
+    var rescanState by remember { mutableStateOf<Pair<Int, Uri>?>(null) }
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+    ) { success ->
+        val (pageNumber, imageUri) = rescanState ?: return@rememberLauncherForActivityResult
+        rescanState = null
+        if (success) {
+            viewModel.rescanPage(pageNumber, imageUri.toString())
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.rescanEvents.collect { event ->
+            when (event) {
+                is DocumentDetailViewModel.RescanEvent.ShowError -> {
+                    Toast.makeText(contextForExport, event.message, Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -332,8 +356,20 @@ fun DocumentDetailScreen(
                                     ocrText = page.ocrText,
                                     isEditMode = state.isEditMode,
                                     isMarkedForDeletion = page.filename in state.markedForDeletion,
+                                    showRescan = !state.isEditMode && !state.ocrRunning && !state.showRescanProgress,
                                     onDelete = { viewModel.toggleMarkForDeletion(page.filename) },
                                     onView = { onPageView(documentId, index) },
+                                    onRescan = {
+                                        val tempFile = java.io.File(contextForExport.cacheDir, "rescan_temp.jpg")
+                                        tempFile.parentFile?.mkdirs()
+                                        val uri = FileProvider.getUriForFile(
+                                            contextForExport,
+                                            "${contextForExport.packageName}.fileprovider",
+                                            tempFile,
+                                        )
+                                        rescanState = index + 1 to uri
+                                        takePictureLauncher.launch(uri)
+                                    },
                                     modifier = itemModifier,
                                 )
                             }
@@ -457,6 +493,21 @@ fun DocumentDetailScreen(
         )
     }
 
+    if (state.showRescanProgress) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Rescanning page") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Text("Processing new image...")
+                }
+            },
+            confirmButton = {},
+        )
+    }
+
     if (state.showExportDialog) {
         var showPageSizeMenu by remember { mutableStateOf(false) }
         AlertDialog(
@@ -515,8 +566,10 @@ private fun PageThumbnail(
     ocrText: String? = null,
     isEditMode: Boolean = false,
     isMarkedForDeletion: Boolean = false,
+    showRescan: Boolean = false,
     onDelete: () -> Unit = {},
     onView: () -> Unit = {},
+    onRescan: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -586,6 +639,26 @@ private fun PageThumbnail(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                 )
+            }
+            if (showRescan) {
+                IconButton(
+                    onClick = onRescan,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(32.dp)
+                        .padding(4.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                            shape = CircleShape,
+                        ),
+                ) {
+                    Icon(
+                        Icons.Default.CameraAlt,
+                        contentDescription = "Rescan page",
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
             if (isEditMode) {
                 Icon(

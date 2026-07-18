@@ -2,6 +2,7 @@ package com.docscanner.ui.screens.home
 
 import android.app.Activity
 import android.content.Intent
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -103,6 +105,28 @@ fun HomeScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.exportPdf(context, uri)
+        }
+    }
+
+    val importPdfLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importPdf(uri)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.importEvents.collect { event ->
+            when (event) {
+                is HomeViewModel.ImportEvent.NavigateToDocument -> {
+                    Toast.makeText(context, "PDF imported successfully", Toast.LENGTH_SHORT).show()
+                    onDocumentClick(event.documentId)
+                }
+                is HomeViewModel.ImportEvent.ShowError -> {
+                    Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -187,6 +211,11 @@ fun HomeScreen(
                             IconButton(onClick = { viewModel.showFilteredShareSheet() }) {
                                 Icon(Icons.Default.Share, contentDescription = "Share filtered")
                             }
+                        }
+                        IconButton(onClick = {
+                            importPdfLauncher.launch(arrayOf("application/pdf"))
+                        }) {
+                            Icon(Icons.Default.Add, contentDescription = "Import PDF")
                         }
                         IconButton(onClick = onSettingsClick) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -434,6 +463,34 @@ fun HomeScreen(
             onSaveToDrive = { uri ->
                 viewModel.saveToDrive(context, uri)
                 viewModel.hideShareSheet()
+            },
+        )
+    }
+
+    if (state.showImportProgress) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Importing PDF") },
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.width(16.dp))
+                    Text("Rendering pages...")
+                }
+            },
+            confirmButton = {},
+        )
+    }
+
+    if (state.importErrorMessage != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissImportError() },
+            title = { Text("Import Failed") },
+            text = { Text(state.importErrorMessage ?: "Could not import PDF") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissImportError() }) {
+                    Text("OK")
+                }
             },
         )
     }

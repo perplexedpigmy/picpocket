@@ -18,9 +18,11 @@ import com.docscanner.domain.ocr.OcrManager
 import com.docscanner.domain.export.PageSize
 import com.docscanner.domain.export.PdfGenerator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -51,7 +53,11 @@ data class DetailUiState(
     val exportPageSize: PageSize = PageSize.A4,
     val showRenameOverwriteDialog: Boolean = false,
     val renameOverwriteTargetName: String = "",
+    val showRescanProgress: Boolean = false,
+    val rescanPageNumber: Int? = null,
+    val ocrRunning: Boolean = false,
 )
+
 
 @HiltViewModel
 class DocumentDetailViewModel @Inject constructor(
@@ -69,6 +75,13 @@ class DocumentDetailViewModel @Inject constructor(
 
     private var currentDocumentId: DocumentId = ""
 
+    private val _rescanEvents = MutableSharedFlow<RescanEvent>()
+    val rescanEvents = _rescanEvents.asSharedFlow()
+
+    sealed interface RescanEvent {
+        data class ShowError(val message: String) : RescanEvent
+    }
+
     private val _allTags = repository.observeAllTags()
     val allTags: StateFlow<List<Tag>> = _allTags.stateIn(
         viewModelScope,
@@ -82,7 +95,13 @@ class DocumentDetailViewModel @Inject constructor(
             repository.observeDocument(documentId).collect { doc ->
                 _uiState.update { it.copy(document = doc) }
                 if (doc != null && !doc.ocrComplete) {
-                    launch { ocrManager.runOcr(documentId) }
+                    _uiState.update { it.copy(ocrRunning = true) }
+                    launch {
+                        ocrManager.runOcr(documentId)
+                        _uiState.update { it.copy(ocrRunning = false) }
+                    }
+                } else if (doc != null) {
+                    _uiState.update { it.copy(ocrRunning = false) }
                 }
             }
         }
@@ -346,6 +365,22 @@ class DocumentDetailViewModel @Inject constructor(
                     is com.docscanner.domain.export.PdfResult.Error -> { }
                 }
             } catch (_: Exception) { }
+        }
+    }
+
+    fun rescanPage(pageNumber: Int, imageUri: String) {
+        val docId = currentDocumentId
+        if (docId.isEmpty()) return
+        _uiState.update { it.copy(showRescanProgress = true, rescanPageNumber = pageNumber) }
+        viewModelScope.launch {
+            repository.rescanPage(docId, pageNumber, imageUri)
+                .onSuccess {
+                    _uiState.update { it.copy(showRescanProgress = false, rescanPageNumber = null) }
+                }
+                .onFailure { error ->
+                    _uiState.update { it.copy(showRescanProgress = false, rescanPageNumber = null) }
+                    _rescanEvents.emit(RescanEvent.ShowError(error.message ?: "Rescan failed"))
+                }
         }
     }
 

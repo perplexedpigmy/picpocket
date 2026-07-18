@@ -6,6 +6,9 @@ import com.docscanner.data.local.entity.TagAutomationEntity
 import com.docscanner.data.local.entity.TagEntity
 import com.docscanner.data.local.entity.toDomain
 import com.docscanner.data.local.entity.toEntity
+import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
@@ -13,6 +16,8 @@ import com.docscanner.data.model.Tag
 import com.docscanner.data.model.TagAutomation
 import com.docscanner.data.store.DocumentStore
 import com.docscanner.data.store.StoredDocument
+import com.docscanner.domain.pdfimport.PdfPageImporter
+import com.docscanner.domain.ocr.OcrManager
 import com.docscanner.domain.scan.PageEncoder
 import com.docscanner.domain.scan.QualityTier
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,6 +40,9 @@ class DocumentRepositoryImpl @Inject constructor(
     private val store: DocumentStore,
     private val tagDao: TagDao,
     private val tagAutomationDao: TagAutomationDao,
+    private val pdfPageImporter: PdfPageImporter,
+    private val ocrManager: OcrManager,
+    private val app: Application,
 ) : DocumentRepository {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -191,6 +200,79 @@ class DocumentRepositoryImpl @Inject constructor(
         return store.reorderPages(documentId, pageNumbers).onSuccess {
             scope.launch { refreshDocuments() }
         }
+    }
+
+    override suspend fun importPdf(uri: Uri): Result<DocumentId> {
+        return runCatching {
+            val contentResolver = app.contentResolver
+            val displayName = resolvePdfDisplayName(contentResolver, uri)
+            val doc = store.createDocument(name = displayName).getOrThrow()
+            val targetDir = store.documentDir(doc.id)
+            val tier = readDefaultQualityTier()
+            val results = pdfPageImporter.import(contentResolver, uri, targetDir, tier).getOrThrow()
+
+            if (results.isEmpty()) {
+                store.deleteDocument(doc.id)
+                throw Exception("Selected PDF has no pages")
+            }
+
+            for (r in results) {
+                store.addPage(
+                    documentId = doc.id,
+                    pageNumber = r.pageNumber,
+                    filename = r.filename,
+                    fileSizeBytes = r.fileSizeBytes,
+                ).getOrThrow()
+            }
+
+            scope.launch { refreshDocuments() }
+            doc.id
+        }
+    }
+
+    override suspend fun rescanPage(documentId: DocumentId, pageNumber: Int, imageUri: String): Result<Unit> {
+        return store.readMetadata(documentId).mapCatching { doc ->
+            val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
+            if (idx < 0) throw Exception("Page $pageNumber not found in document $documentId")
+            val filename = doc.pages[idx].filename
+            val pageFile = store.pageFile(documentId, filename)
+
+            val src = File(java.net.URI(imageUri))
+            val tier = QualityTier.entries.getOrNull(doc.qualityTier) ?: QualityTier.BEST
+            PageEncoder.encodePage(src, pageFile, tier)
+
+            store.replacePageImage(
+                documentId = documentId,
+                pageNumber = pageNumber,
+                fileSizeBytes = pageFile.length(),
+            ).getOrThrow()
+
+            scope.launch { refreshDocuments() }
+            scope.launch { ocrManager.runOcr(documentId) }
+        }
+    }
+
+    private fun resolvePdfDisplayName(contentResolver: android.content.ContentResolver, uri: Uri): String {
+        val cursor = contentResolver.query(uri, null, null, null, null)
+        cursor?.use {
+            if (it.moveToFirst()) {
+                val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) {
+                    val name = it.getString(nameIndex)
+                    if (name != null) {
+                        return name.substringBeforeLast(".")
+                    }
+                }
+            }
+        }
+        val path = uri.lastPathSegment ?: "Imported Document"
+        return path.substringBeforeLast(".")
+    }
+
+    private fun readDefaultQualityTier(): QualityTier {
+        val prefs = app.getSharedPreferences("settings", 0)
+        val ordinal = prefs.getInt("quality_tier", 0)
+        return QualityTier.entries.getOrNull(ordinal) ?: QualityTier.BEST
     }
 
     override suspend fun searchDocumentsByOcrText(query: String): Result<Set<DocumentId>> {

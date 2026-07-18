@@ -7,7 +7,12 @@ import java.io.File
 import com.docscanner.data.local.DocScannerDatabase
 import com.docscanner.data.repository.DocumentRepositoryImpl
 import com.docscanner.data.store.DocumentStore
+import com.docscanner.domain.ocr.OcrEngine
+import com.docscanner.domain.ocr.OcrManager
+import com.docscanner.domain.pdfimport.PdfPageImporter
 import com.docscanner.util.MainCoroutineRule
+import io.mockk.coEvery
+import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -28,6 +33,17 @@ private fun tempPageUri(): String {
     return Uri.fromFile(f).toString()
 }
 
+private fun createOcrManager(app: android.app.Application): OcrManager {
+    return OcrManager(
+        object : OcrEngine {
+            override suspend fun recognize(bitmap: android.graphics.Bitmap): com.docscanner.domain.ocr.OcrResult {
+                return com.docscanner.domain.ocr.OcrResult("", 0f)
+            }
+        },
+        DocumentStore(app),
+    )
+}
+
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
 class DocumentRepositoryTest {
@@ -46,9 +62,19 @@ class DocumentRepositoryTest {
         ).allowMainThreadQueries().build()
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         repository = DocumentRepositoryImpl(
-            DocumentStore(app),
-            database.tagDao(),
-            database.tagAutomationDao(),
+            store = DocumentStore(app),
+            tagDao = database.tagDao(),
+            tagAutomationDao = database.tagAutomationDao(),
+            pdfPageImporter = PdfPageImporter(),
+            ocrManager = com.docscanner.domain.ocr.OcrManager(
+                object : OcrEngine {
+                    override suspend fun recognize(bitmap: android.graphics.Bitmap): com.docscanner.domain.ocr.OcrResult {
+                        return com.docscanner.domain.ocr.OcrResult("", 0f)
+                    }
+                },
+                DocumentStore(app),
+            ),
+            app = app,
         )
     }
 
@@ -279,5 +305,55 @@ class DocumentRepositoryTest {
         val map = repository.observeDocumentTagMap().first()
         assertEquals(2, map[doc1]?.size)
         assertEquals(1, map[doc2]?.size)
+    }
+
+    @Test
+    fun `importPdf fails when PdfPageImporter returns empty list`() = runTest {
+        val mockImporter = mockk<PdfPageImporter>()
+        coEvery { mockImporter.import(any(), any(), any(), any()) } returns Result.success(emptyList())
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val repo = DocumentRepositoryImpl(
+            store = DocumentStore(app),
+            tagDao = database.tagDao(),
+            tagAutomationDao = database.tagAutomationDao(),
+            pdfPageImporter = mockImporter,
+            ocrManager = createOcrManager(app),
+            app = app,
+        )
+
+        val uri = Uri.parse("content://test/test.pdf")
+        val result = repo.importPdf(uri)
+        assertTrue("Should fail with empty pages", result.isFailure)
+        assertEquals("Selected PDF has no pages", result.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `importPdf handles PdfPageImporter exception gracefully`() = runTest {
+        val mockImporter = mockk<PdfPageImporter>()
+        coEvery { mockImporter.import(any(), any(), any(), any()) } throws Exception("PDF parsing error")
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val repo = DocumentRepositoryImpl(
+            store = DocumentStore(app),
+            tagDao = database.tagDao(),
+            tagAutomationDao = database.tagAutomationDao(),
+            pdfPageImporter = mockImporter,
+            ocrManager = createOcrManager(app),
+            app = app,
+        )
+
+        val uri = Uri.parse("content://test/test.pdf")
+        val result = repo.importPdf(uri)
+        assertTrue("Should fail on PDF import error", result.isFailure)
+    }
+
+    @Test
+    fun `rescanPage fails for nonexistent page number`() = runTest {
+        val docId = repository.createDocument("Rescan test").getOrThrow()
+        repository.addPage(docId, tempPageUri())
+
+        val result = repository.rescanPage(docId, pageNumber = 99, imageUri = tempPageUri())
+        assertTrue("Should fail for nonexistent page", result.isFailure)
     }
 }

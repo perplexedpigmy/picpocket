@@ -1,6 +1,7 @@
 package com.docscanner.ui
 
 import android.app.Application
+import android.net.Uri
 import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.domain.export.FakePdfGenerator
 import com.docscanner.ui.components.MatchMode
@@ -394,5 +395,17 @@ class HomeViewModelTest {
         viewModel.hideShareSheet()
         assertFalse(viewModel.uiState.value.showShareSheet)
         assertFalse(viewModel.uiState.value.shareFilteredDocs)
+    }
+
+    @Test
+    fun `importPdf sets error state on failure`() = runTest {
+        repo.failImportPdf = true
+        val uri = Uri.parse("content://test/test.pdf")
+
+        viewModel.importPdf(uri)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertEquals("Import failed", viewModel.uiState.value.importErrorMessage)
+        assertFalse(viewModel.uiState.value.showImportProgress)
     }
 }
