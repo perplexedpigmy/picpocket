@@ -2,7 +2,7 @@ package com.docscanner.ui.screens.settings
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.export.PageSize
 import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.theme.DarkMode
 import com.docscanner.ui.theme.Palette

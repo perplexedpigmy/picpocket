@@ -31,21 +31,22 @@ class FakeDocumentRepository : DocumentRepository {
         return pageLists.getOrPut(documentId) { MutableStateFlow(emptyList()) }
     }
 
-    override suspend fun getDocument(documentId: DocumentId): Document? {
-        return documents.value.find { it.id == documentId }
+    override suspend fun getDocument(documentId: DocumentId): Result<Document> {
+        val doc = documents.value.find { it.id == documentId }
+        return if (doc != null) Result.success(doc) else Result.failure(Exception("Document not found"))
     }
 
-    override suspend fun getPages(documentId: DocumentId): List<Page> {
-        return pageLists[documentId]?.value ?: emptyList()
+    override suspend fun getPages(documentId: DocumentId): Result<List<Page>> {
+        return Result.success(pageLists[documentId]?.value ?: emptyList())
     }
 
-    override suspend fun createDocument(name: String, qualityTier: Int, pageSize: String?): DocumentId {
+    override suspend fun createDocument(name: String, qualityTier: Int, pageSize: String?): Result<DocumentId> {
         val now = System.currentTimeMillis()
         nextDocId++
         val id = "doc_$nextDocId"
         val doc = Document(id, name, now, now, qualityTier = qualityTier, pageSize = pageSize)
         documents.value = documents.value + doc
-        return id
+        return Result.success(id)
     }
 
     override suspend fun addPage(
@@ -54,7 +55,7 @@ class FakeDocumentRepository : DocumentRepository {
         filterTypeOrdinal: Int,
         fileSizeBytes: Long,
         qualityTier: Int,
-    ) {
+    ): Result<Unit> {
         val now = System.currentTimeMillis()
         val existingPages = pageLists.getOrPut(documentId) { MutableStateFlow(emptyList()) }
         val pageNum = existingPages.value.size + 1
@@ -72,58 +73,63 @@ class FakeDocumentRepository : DocumentRepository {
         existingPages.value = existingPages.value + page
         val filenames = pageFilenames.getOrPut(documentId) { MutableStateFlow(emptyMap()) }
         filenames.value = filenames.value + (page.id to filename)
+        return Result.success(Unit)
     }
 
-    override suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String) {
-        val state = pageLists[documentId] ?: return
+    override suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String): Result<Unit> {
+        val state = pageLists[documentId] ?: return Result.success(Unit)
         state.value = state.value.map {
             if (it.pageNumber == pageNumber) it.copy(ocrText = ocrText) else it
         }
+        return Result.success(Unit)
     }
 
-    override suspend fun updateDocumentName(documentId: DocumentId, name: String) {
+    override suspend fun updateDocumentName(documentId: DocumentId, name: String): Result<Unit> {
         documents.value = documents.value.map {
             if (it.id == documentId) it.copy(name = name) else it
         }
+        return Result.success(Unit)
     }
 
-    override suspend fun getDocumentsByName(name: String): List<Document> {
-        return documents.value.filter { it.name == name }
+    override suspend fun getDocumentsByName(name: String): Result<List<Document>> {
+        return Result.success(documents.value.filter { it.name == name })
     }
 
-    override suspend fun getAllDocuments(): List<Document> {
-        return documents.value
+    override suspend fun getAllDocuments(): Result<List<Document>> {
+        return Result.success(documents.value)
     }
 
-    override suspend fun deleteDocumentsByName(name: String) {
+    override suspend fun deleteDocumentsByName(name: String): Result<Unit> {
         val ids = documents.value.filter { it.name == name }.map { it.id }
-        deleteDocuments(ids)
+        return deleteDocuments(ids)
     }
 
-    override suspend fun deleteDocuments(documentIds: List<DocumentId>) {
+    override suspend fun deleteDocuments(documentIds: List<DocumentId>): Result<Unit> {
         documents.value = documents.value.filter { it.id !in documentIds }
         for (id in documentIds) {
             pageLists.remove(id)
         }
+        return Result.success(Unit)
     }
 
-    override suspend fun deleteDocument(documentId: DocumentId) {
-        deleteDocuments(listOf(documentId))
+    override suspend fun deleteDocument(documentId: DocumentId): Result<Unit> {
+        return deleteDocuments(listOf(documentId))
     }
 
-    override suspend fun deletePage(documentId: DocumentId, pageNumber: Int) {
-        val state = pageLists[documentId] ?: return
+    override suspend fun deletePage(documentId: DocumentId, pageNumber: Int): Result<Unit> {
+        val state = pageLists[documentId] ?: return Result.success(Unit)
         state.value = state.value.filter { it.pageNumber != pageNumber }
         val filenames = pageFilenames[documentId]
         if (filenames != null) {
             val removed = filenames.value.filter { it.value == "%05d".format(pageNumber) }
             filenames.value = filenames.value - removed.keys
         }
+        return Result.success(Unit)
     }
 
-    override suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>) {
-        val state = pageLists[documentId] ?: return
-        val filenames = pageFilenames[documentId] ?: return
+    override suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>): Result<Unit> {
+        val state = pageLists[documentId] ?: return Result.success(Unit)
+        val filenames = pageFilenames[documentId] ?: return Result.success(Unit)
         val keptSet = keptFilenames.toSet()
         val keptIds = filenames.value.filter { it.value in keptSet }.keys
         val survivors = state.value.filter { it.id in keptIds }
@@ -135,24 +141,27 @@ class FakeDocumentRepository : DocumentRepository {
         }
         state.value = updated
         filenames.value = newFilenames
+        return Result.success(Unit)
     }
 
-    override suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>) {
-        val state = pageLists[documentId] ?: return
+    override suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>): Result<Unit> {
+        val state = pageLists[documentId] ?: return Result.success(Unit)
         val pageMap = state.value.associateBy { it.pageNumber }
         val reordered = pageNumbers.mapNotNull { pageMap[it] }
         val updated = reordered.mapIndexed { index, page ->
             page.copy(pageNumber = index + 1)
         }
         state.value = updated
+        return Result.success(Unit)
     }
 
-    override suspend fun searchDocumentsByOcrText(query: String): Set<DocumentId> {
-        val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (_: Exception) { return emptySet() }
-        return pageLists.entries.flatMap { (docId, state) ->
+    override suspend fun searchDocumentsByOcrText(query: String): Result<Set<DocumentId>> {
+        val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (_: Exception) { return Result.success(emptySet()) }
+        val result = pageLists.entries.flatMap { (docId, state) ->
             state.value.filter { it.ocrText != null && regex.containsMatchIn(it.ocrText!!) }
                 .map { docId }
         }.toSet()
+        return Result.success(result)
     }
 
     override fun observeAllTags(): Flow<List<Tag>> = tags

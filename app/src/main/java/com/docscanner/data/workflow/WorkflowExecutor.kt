@@ -12,8 +12,8 @@ import com.docscanner.data.model.TagAutomation
 import com.docscanner.data.model.WorkflowApp
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.di.SearchablePdf
-import com.docscanner.domain.pdf.PageSize
-import com.docscanner.domain.pdf.PdfGenerator
+import com.docscanner.domain.export.PageSize
+import com.docscanner.domain.export.PdfGenerator
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -33,8 +33,7 @@ class WorkflowExecutor @Inject constructor(
     }
 
     private suspend fun generateTempPdf(document: Document): String? {
-        val pages = repository.getPages(document.id)
-        if (pages.isEmpty()) return null
+        val pages = repository.getPages(document.id).getOrNull() ?: return null
         val tempDir = File(app.cacheDir, "workflow_exports")
         tempDir.mkdirs()
         val tempFile = File(tempDir, "${document.id}.pdf")
@@ -43,8 +42,8 @@ class WorkflowExecutor @Inject constructor(
         val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
         val result = pdfGenerator.generate(app, pages, Uri.fromFile(tempFile), pageSize)
         return when (result) {
-            is com.docscanner.domain.pdf.PdfResult.Success -> Uri.fromFile(tempFile).toString()
-            is com.docscanner.domain.pdf.PdfResult.Error -> null
+            is com.docscanner.domain.export.PdfResult.Success -> Uri.fromFile(tempFile).toString()
+            is com.docscanner.domain.export.PdfResult.Error -> null
         }
     }
 

@@ -1,8 +1,7 @@
-package com.docscanner.domain.pdf
+package com.docscanner.domain.export
 
 import android.content.Context
 import android.graphics.BitmapFactory
-import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import com.docscanner.data.model.Page
@@ -13,7 +12,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class SearchablePdfGenerator @Inject constructor() : PdfGenerator {
+class ImageOnlyPdfGenerator @Inject constructor() : PdfGenerator {
 
     override suspend fun generate(
         context: Context,
@@ -23,7 +22,6 @@ class SearchablePdfGenerator @Inject constructor() : PdfGenerator {
     ): PdfResult = withContext(Dispatchers.IO) {
         try {
             val document = PdfDocument()
-
             for (page in pages) {
                 val bitmap = context.contentResolver.openInputStream(
                     Uri.parse(page.imageUri)
@@ -50,22 +48,6 @@ class SearchablePdfGenerator @Inject constructor() : PdfGenerator {
                 pdfPage.canvas.drawBitmap(bitmap, null, android.graphics.RectF(
                     offsetX, offsetY, offsetX + scaledW, offsetY + scaledH
                 ), null)
-
-                val ocrText = page.ocrText
-                if (!ocrText.isNullOrBlank()) {
-                    val textPaint = Paint().apply {
-                        color = android.graphics.Color.TRANSPARENT
-                        isAntiAlias = true
-                        textSize = 12f
-                    }
-                    val textX = offsetX + 20f
-                    val textY = offsetY + 30f
-                    val lines = ocrText.split("\n")
-                    for ((i, line) in lines.withIndex()) {
-                        pdfPage.canvas.drawText(line, textX, textY + i * 14f, textPaint)
-                    }
-                }
-
                 document.finishPage(pdfPage)
                 bitmap.recycle()
             }

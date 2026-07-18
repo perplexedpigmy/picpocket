@@ -45,8 +45,9 @@ class DocumentRepositoryImpl @Inject constructor(
     }
 
     private suspend fun refreshDocuments() {
-        val stored = store.listDocuments()
-        _documents.value = stored.map { it.toDomain() }
+        store.listDocuments().onSuccess { stored ->
+            _documents.value = stored.map { it.toDomain() }
+        }
     }
 
     override fun observeDocuments(): Flow<List<Document>> {
@@ -59,9 +60,9 @@ class DocumentRepositoryImpl @Inject constructor(
     }
 
     override fun observePages(documentId: DocumentId): Flow<List<Page>> {
-        return _documents.asStateFlow().map { list ->
-            val doc = list.find { it.id == documentId } ?: return@map emptyList()
-            store.readMetadata(documentId)?.pages?.mapIndexed { _, sp ->
+        return _documents.asStateFlow().map { _ ->
+            val stored = store.readMetadata(documentId).getOrNull() ?: return@map emptyList()
+            stored.pages.mapIndexed { _, sp ->
                 Page(
                     id = sp.pageNumber.toLong(),
                     documentId = documentId,
@@ -72,34 +73,36 @@ class DocumentRepositoryImpl @Inject constructor(
                     filterTypeOrdinal = sp.filterTypeOrdinal,
                     createdAt = sp.createdAt,
                 )
-            } ?: emptyList()
+            }
         }
     }
 
-    override suspend fun getDocument(documentId: DocumentId): Document? {
-        return store.readMetadata(documentId)?.toDomain()
+    override suspend fun getDocument(documentId: DocumentId): Result<Document> {
+        return store.readMetadata(documentId).map { it.toDomain() }
     }
 
-    override suspend fun getPages(documentId: DocumentId): List<Page> {
-        val doc = store.readMetadata(documentId) ?: return emptyList()
-        return doc.pages.map { sp ->
-            Page(
-                id = sp.pageNumber.toLong(),
-                documentId = documentId,
-                pageNumber = sp.pageNumber,
-                filename = sp.filename,
-                imageUri = store.pageFile(documentId, sp.filename).toURI().toString(),
-                ocrText = sp.ocrText,
-                filterTypeOrdinal = sp.filterTypeOrdinal,
-                createdAt = sp.createdAt,
-            )
+    override suspend fun getPages(documentId: DocumentId): Result<List<Page>> {
+        return store.readMetadata(documentId).map { stored ->
+            stored.pages.map { sp ->
+                Page(
+                    id = sp.pageNumber.toLong(),
+                    documentId = documentId,
+                    pageNumber = sp.pageNumber,
+                    filename = sp.filename,
+                    imageUri = store.pageFile(documentId, sp.filename).toURI().toString(),
+                    ocrText = sp.ocrText,
+                    filterTypeOrdinal = sp.filterTypeOrdinal,
+                    createdAt = sp.createdAt,
+                )
+            }
         }
     }
 
-    override suspend fun createDocument(name: String, qualityTier: Int, pageSize: String?): DocumentId {
-        val stored = store.createDocument(name = name, qualityTier = qualityTier, pageSize = pageSize)
-        scope.launch { refreshDocuments() }
-        return stored.id
+    override suspend fun createDocument(name: String, qualityTier: Int, pageSize: String?): Result<DocumentId> {
+        return store.createDocument(name = name, qualityTier = qualityTier, pageSize = pageSize).map { stored ->
+            scope.launch { refreshDocuments() }
+            stored.id
+        }
     }
 
     override suspend fun addPage(
@@ -108,83 +111,95 @@ class DocumentRepositoryImpl @Inject constructor(
         filterTypeOrdinal: Int,
         fileSizeBytes: Long,
         qualityTier: Int,
-    ) {
-        val pageNumber = store.nextPageNumber(documentId)
-        val filename = store.filenameForPage(pageNumber)
-        val pageFile = store.pageFile(documentId, filename)
-        val src = java.io.File(java.net.URI(imageUri))
-        val tier = QualityTier.entries.getOrNull(qualityTier) ?: QualityTier.BEST
-        PageEncoder.encodePage(src, pageFile, tier)
-        store.addPage(
-            documentId = documentId,
-            pageNumber = pageNumber,
-            filename = filename,
-            fileSizeBytes = pageFile.length(),
-            filterTypeOrdinal = filterTypeOrdinal,
-        )
-        scope.launch { refreshDocuments() }
-    }
-
-    override suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String) {
-        store.updatePageOcrText(documentId, pageNumber, ocrText)
-    }
-
-    override suspend fun updateDocumentName(documentId: DocumentId, name: String) {
-        store.updateDocumentName(documentId, name)
-        scope.launch { refreshDocuments() }
-    }
-
-    override suspend fun getDocumentsByName(name: String): List<Document> {
-        return store.listDocuments()
-            .filter { it.name.equals(name, ignoreCase = true) }
-            .map { it.toDomain() }
-    }
-
-    override suspend fun getAllDocuments(): List<Document> {
-        return store.listDocuments().map { it.toDomain() }
-    }
-
-    override suspend fun deleteDocumentsByName(name: String) {
-        val docs = store.listDocuments().filter { it.name.equals(name, ignoreCase = true) }
-        for (doc in docs) store.deleteDocument(doc.id)
-        scope.launch { refreshDocuments() }
-    }
-
-    override suspend fun deleteDocuments(documentIds: List<DocumentId>) {
-        for (id in documentIds) store.deleteDocument(id)
-        scope.launch { refreshDocuments() }
-    }
-
-    override suspend fun deleteDocument(documentId: DocumentId) {
-        store.deleteDocument(documentId)
-        scope.launch { refreshDocuments() }
-    }
-
-    override suspend fun deletePage(documentId: DocumentId, pageNumber: Int) {
-        store.removePage(documentId, pageNumber)
-        scope.launch { refreshDocuments() }
-    }
-
-    override suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>) {
-        val orphaned = store.replacePages(documentId, keptFilenames)
-        for (filename in orphaned) {
-            val file = store.pageFile(documentId, filename)
-            if (file.exists()) file.delete()
+    ): Result<Unit> {
+        return store.nextPageNumber(documentId).mapCatching { pageNumber ->
+            val filename = store.filenameForPage(pageNumber)
+            val pageFile = store.pageFile(documentId, filename)
+            val src = java.io.File(java.net.URI(imageUri))
+            val tier = QualityTier.entries.getOrNull(qualityTier) ?: QualityTier.BEST
+            PageEncoder.encodePage(src, pageFile, tier)
+            store.addPage(
+                documentId = documentId,
+                pageNumber = pageNumber,
+                filename = filename,
+                fileSizeBytes = pageFile.length(),
+                filterTypeOrdinal = filterTypeOrdinal,
+            ).getOrThrow()
+            scope.launch { refreshDocuments() }
         }
-        scope.launch { refreshDocuments() }
     }
 
-    override suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>) {
-        store.reorderPages(documentId, pageNumbers)
-        scope.launch { refreshDocuments() }
+    override suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String): Result<Unit> {
+        return store.updatePageOcrText(documentId, pageNumber, ocrText)
     }
 
-    override suspend fun searchDocumentsByOcrText(query: String): Set<DocumentId> {
-        val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (_: Exception) { return emptySet() }
-        val docs = store.listDocuments()
-        return docs.filter { doc ->
-            doc.pages.any { page -> page.ocrText?.let { regex.containsMatchIn(it) } == true }
-        }.map { it.id }.toSet()
+    override suspend fun updateDocumentName(documentId: DocumentId, name: String): Result<Unit> {
+        return store.updateDocumentName(documentId, name).onSuccess {
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun getDocumentsByName(name: String): Result<List<Document>> {
+        return store.listDocuments().map { stored ->
+            stored.filter { it.name.equals(name, ignoreCase = true) }
+                .map { it.toDomain() }
+        }
+    }
+
+    override suspend fun getAllDocuments(): Result<List<Document>> {
+        return store.listDocuments().map { stored -> stored.map { it.toDomain() } }
+    }
+
+    override suspend fun deleteDocumentsByName(name: String): Result<Unit> {
+        return store.listDocuments().mapCatching { stored ->
+            val docs = stored.filter { it.name.equals(name, ignoreCase = true) }
+            for (doc in docs) store.deleteDocument(doc.id).getOrThrow()
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun deleteDocuments(documentIds: List<DocumentId>): Result<Unit> {
+        return runCatching {
+            for (id in documentIds) store.deleteDocument(id).getOrThrow()
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun deleteDocument(documentId: DocumentId): Result<Unit> {
+        return store.deleteDocument(documentId).onSuccess {
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun deletePage(documentId: DocumentId, pageNumber: Int): Result<Unit> {
+        return store.removePage(documentId, pageNumber).onSuccess {
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>): Result<Unit> {
+        return store.replacePages(documentId, keptFilenames).mapCatching { orphaned ->
+            for (filename in orphaned) {
+                val file = store.pageFile(documentId, filename)
+                if (file.exists()) file.delete()
+            }
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>): Result<Unit> {
+        return store.reorderPages(documentId, pageNumbers).onSuccess {
+            scope.launch { refreshDocuments() }
+        }
+    }
+
+    override suspend fun searchDocumentsByOcrText(query: String): Result<Set<DocumentId>> {
+        val regex = try { Regex(query, RegexOption.IGNORE_CASE) } catch (e: Exception) { return Result.success(emptySet()) }
+        return store.listDocuments().map { docs ->
+            docs.filter { doc ->
+                doc.pages.any { page -> page.ocrText?.let { regex.containsMatchIn(it) } == true }
+            }.map { it.id }.toSet()
+        }
     }
 
     override fun observeAllTags(): Flow<List<Tag>> {
@@ -193,7 +208,7 @@ class DocumentRepositoryImpl @Inject constructor(
 
     override fun observeDocumentTags(documentId: DocumentId): Flow<List<Tag>> {
         return merge(_documents.asStateFlow(), _tagChangeNotifier.asSharedFlow()).map {
-            val stored = store.readMetadata(documentId) ?: return@map emptyList()
+            val stored = store.readMetadata(documentId).getOrNull() ?: return@map emptyList()
             val tagNames = stored.tags
             if (tagNames.isEmpty()) return@map emptyList()
             val allTags = tagDao.getAll()
@@ -207,7 +222,7 @@ class DocumentRepositoryImpl @Inject constructor(
         return _documents.asStateFlow().map { docs ->
             val allTagEntities = tagDao.getAll()
             val allTags = docs.mapNotNull { doc ->
-                val stored = store.readMetadata(doc.id) ?: return@mapNotNull null
+                val stored = store.readMetadata(doc.id).getOrNull() ?: return@mapNotNull null
                 val tagNames = stored.tags
                 if (tagNames.isEmpty()) return@mapNotNull null
                 doc.id to tagNames.mapNotNull { name ->
@@ -238,7 +253,7 @@ class DocumentRepositoryImpl @Inject constructor(
     override suspend fun setDocumentTags(documentId: DocumentId, tagIds: List<Long>) {
         val tags = tagDao.getByIds(tagIds)
         val tagNames = tags.map { it.name }
-        val doc = store.readMetadata(documentId) ?: return
+        val doc = store.readMetadata(documentId).getOrNull() ?: return
         store.writeMetadata(documentId, doc.copy(tags = tagNames))
         _tagChangeNotifier.emit(Unit)
         scope.launch { refreshDocuments() }

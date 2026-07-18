@@ -15,8 +15,8 @@ import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.data.store.DocumentStore
 import com.docscanner.di.SearchablePdf
 import com.docscanner.domain.ocr.OcrManager
-import com.docscanner.domain.pdf.PageSize
-import com.docscanner.domain.pdf.PdfGenerator
+import com.docscanner.domain.export.PageSize
+import com.docscanner.domain.export.PdfGenerator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -171,7 +171,7 @@ class DocumentDetailViewModel @Inject constructor(
         val name = _uiState.value.renameText
         if (name.isBlank()) return
         viewModelScope.launch {
-            val existing = repository.getDocumentsByName(name)
+            val existing = repository.getDocumentsByName(name).getOrNull() ?: emptyList()
             val conflict = existing.firstOrNull { it.id != docId }
             if (conflict != null) {
                 _uiState.update { it.copy(showRenameOverwriteDialog = true, renameOverwriteTargetName = name) }
@@ -337,13 +337,13 @@ class DocumentDetailViewModel @Inject constructor(
         if (docId.isEmpty()) return
         viewModelScope.launch {
             try {
-                val pages = repository.getPages(docId) ?: emptyList()
+                val pages = repository.getPages(docId).getOrNull() ?: emptyList()
                 val result = searchablePdfGenerator.generate(context, pages, outputUri, pageSize)
                 when (result) {
-                    is com.docscanner.domain.pdf.PdfResult.Success -> {
+                    is com.docscanner.domain.export.PdfResult.Success -> {
                         hideExportDialog()
                     }
-                    is com.docscanner.domain.pdf.PdfResult.Error -> { }
+                    is com.docscanner.domain.export.PdfResult.Error -> { }
                 }
             } catch (_: Exception) { }
         }
@@ -382,7 +382,7 @@ class DocumentDetailViewModel @Inject constructor(
     }
 
     private suspend fun generatePdfToTempFile(documentId: DocumentId): Uri? {
-        val pages = repository.getPages(documentId) ?: return null
+        val pages = repository.getPages(documentId).getOrNull() ?: return null
         if (pages.isEmpty()) return null
         val app = getApplication<Application>()
         val tempDir = File(app.cacheDir, "exports")
@@ -393,8 +393,8 @@ class DocumentDetailViewModel @Inject constructor(
         val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
         val result = searchablePdfGenerator.generate(app, pages, Uri.fromFile(tempFile), pageSize)
         return when (result) {
-            is com.docscanner.domain.pdf.PdfResult.Success -> Uri.parse(result.uri)
-            is com.docscanner.domain.pdf.PdfResult.Error -> null
+            is com.docscanner.domain.export.PdfResult.Success -> Uri.parse(result.uri)
+            is com.docscanner.domain.export.PdfResult.Error -> null
         }
     }
 }

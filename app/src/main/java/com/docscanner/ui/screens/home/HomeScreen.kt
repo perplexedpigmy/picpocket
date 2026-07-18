@@ -73,7 +73,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import com.docscanner.data.model.Document
 import com.docscanner.data.model.Tag
-import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.export.PageSize
 import com.docscanner.ui.components.MatchMode
 import com.docscanner.ui.components.ShareOptionsSheet
 import com.docscanner.data.model.DocumentId

@@ -1,4 +1,4 @@
-package com.docscanner.domain.pdf
+package com.docscanner.domain.export
 
 enum class PageSize(
     val label: String,

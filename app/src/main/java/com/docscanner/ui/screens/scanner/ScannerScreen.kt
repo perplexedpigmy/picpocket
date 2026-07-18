@@ -74,7 +74,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.DocumentId
 import com.docscanner.domain.filter.FilterType
-import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.export.PageSize
 import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.components.TagSelectorSheet
 

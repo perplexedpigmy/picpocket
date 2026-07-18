@@ -1,0 +1,31 @@
+# Detekt configuration for pdfscanner
+# Run: ./gradlew detekt
+
+build:
+  maxIssues: 0
+
+style:
+  UnusedImports:
+    active: true
+  UnusedParameter:
+    active: true
+  WildcardImport:
+    active: true
+
+comments:
+  active: false
+
+complexity:
+  active: false
+
+potential-bugs:
+  active: false
+
+performance:
+  active: false
+
+exceptions:
+  active: false
+
+naming:
+  active: false

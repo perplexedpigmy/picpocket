@@ -43,7 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.export.PageSize
 import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.theme.DarkMode
 import com.docscanner.ui.theme.Palette

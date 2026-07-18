@@ -2,7 +2,7 @@ package com.docscanner.ui
 
 import android.app.Application
 import com.docscanner.data.FakeDocumentRepository
-import com.docscanner.domain.pdf.FakePdfGenerator
+import com.docscanner.domain.export.FakePdfGenerator
 import com.docscanner.ui.components.MatchMode
 import com.docscanner.ui.screens.home.HomeViewModel
 import com.docscanner.util.MainCoroutineRule
@@ -66,10 +66,10 @@ class HomeViewModelTest {
 
     @Test
     fun `sort by modified orders descending`() = runTest {
-        val id1 = repo.createDocument("Doc1")
+        val id1 = repo.createDocument("Doc1").getOrThrow()
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
         Thread.sleep(10)
-        val id2 = repo.createDocument("Doc2")
+        val id2 = repo.createDocument("Doc2").getOrThrow()
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         assertEquals(id2, viewModel.uiState.value.documents[0].id)
@@ -78,7 +78,7 @@ class HomeViewModelTest {
 
     @Test
     fun `toggle selection mode`() = runTest {
-        val docId = repo.createDocument("Doc1")
+        val docId = repo.createDocument("Doc1").getOrThrow()
         assertFalse(viewModel.uiState.value.selectionMode)
         viewModel.onDocumentLongPress(docId)
         assertTrue(viewModel.uiState.value.selectionMode)
@@ -208,8 +208,8 @@ class HomeViewModelTest {
 
     @Test
     fun `search in content finds documents by OCR text`() = runTest {
-        val doc1 = repo.createDocument("Invoice")
-        val doc2 = repo.createDocument("Receipt")
+        val doc1 = repo.createDocument("Invoice").getOrThrow()
+        val doc2 = repo.createDocument("Receipt").getOrThrow()
         repo.addPage(doc1, "content://page1.jpg")
         repo.addPage(doc2, "content://page2.jpg")
         repo.updatePageOcrText(doc1, 1, "This invoice is for $500")
@@ -226,8 +226,8 @@ class HomeViewModelTest {
 
     @Test
     fun `search in content matches both name and OCR`() = runTest {
-        val doc1 = repo.createDocument("Tax Return")
-        val doc2 = repo.createDocument("Notes")
+        val doc1 = repo.createDocument("Tax Return").getOrThrow()
+        val doc2 = repo.createDocument("Notes").getOrThrow()
         repo.addPage(doc1, "content://page1.jpg")
         repo.addPage(doc2, "content://page2.jpg")
         repo.updatePageOcrText(doc2, 1, "This is about tax deductions")
@@ -242,7 +242,7 @@ class HomeViewModelTest {
 
     @Test
     fun `search in content only matches when toggled on`() = runTest {
-        val doc1 = repo.createDocument("Invoice Summary")
+        val doc1 = repo.createDocument("Invoice Summary").getOrThrow()
         repo.addPage(doc1, "content://page1.jpg")
         repo.updatePageOcrText(doc1, 1, "Total due: $1000")
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
@@ -286,7 +286,7 @@ class HomeViewModelTest {
 
     @Test
     fun `applyTagsToSelected sets tags on selected documents`() = runTest {
-        val docId = repo.createDocument("Doc1")
+        val docId = repo.createDocument("Doc1").getOrThrow()
         repo.createDocument("Doc2")
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
         val tagId = repo.createTag("Important")
@@ -323,8 +323,8 @@ class HomeViewModelTest {
 
     @Test
     fun `filter by tag limits visible documents`() = runTest {
-        val doc1 = repo.createDocument("Work Doc")
-        val doc2 = repo.createDocument("Personal Doc")
+        val doc1 = repo.createDocument("Work Doc").getOrThrow()
+        val doc2 = repo.createDocument("Personal Doc").getOrThrow()
         val tagId = repo.createTag("Work")
         repo.setDocumentTags(doc1, listOf(tagId))
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
@@ -345,8 +345,8 @@ class HomeViewModelTest {
 
     @Test
     fun `filterMatchAll requires all tags`() = runTest {
-        val doc1 = repo.createDocument("All Tags Doc")
-        val doc2 = repo.createDocument("Partial Tags Doc")
+        val doc1 = repo.createDocument("All Tags Doc").getOrThrow()
+        val doc2 = repo.createDocument("Partial Tags Doc").getOrThrow()
         val work = repo.createTag("Work")
         val urgent = repo.createTag("Urgent")
         repo.setDocumentTags(doc1, listOf(work, urgent))

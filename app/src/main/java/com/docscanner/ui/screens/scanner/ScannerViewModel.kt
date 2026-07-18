@@ -18,7 +18,7 @@ import com.docscanner.data.workflow.WorkflowExecutor
 import com.docscanner.domain.filter.FilterPipeline
 import com.docscanner.domain.filter.FilterType
 import com.docscanner.domain.ocr.OcrManager
-import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.export.PageSize
 import com.docscanner.domain.scan.QualityTier
 import com.docscanner.domain.scanner.ScannerManager
 import com.docscanner.domain.scanner.ScannerResult
@@ -268,7 +268,7 @@ class ScannerViewModel @Inject constructor(
             val automations = repository.getAutomationsForTagIds(tagIds)
                 .filter { it.triggerEvent == TriggerEvent.PAGES_ADDED }
             if (automations.isNotEmpty()) {
-                val scannedDoc = repository.getDocument(documentId) ?: return@launch
+                val scannedDoc = repository.getDocument(documentId).getOrNull() ?: return@launch
                 workflowExecutor.execute(scannedDoc, automations)
             }
         }
@@ -319,7 +319,7 @@ class ScannerViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val existing = repository.getDocumentsByName(state.documentName)
+                val existing = repository.getDocumentsByName(state.documentName).getOrNull() ?: emptyList()
                 if (existing.isNotEmpty()) {
                     _uiState.update {
                         it.copy(isSaving = false, showOverwriteDialog = true, overwriteTargetName = state.documentName)
@@ -327,7 +327,7 @@ class ScannerViewModel @Inject constructor(
                     return@launch
                 }
 
-                val documentId = repository.createDocument(state.documentName, qualityTier = state.qualityTier.ordinal, pageSize = state.exportPageSize.name)
+                val documentId = repository.createDocument(state.documentName, qualityTier = state.qualityTier.ordinal, pageSize = state.exportPageSize.name).getOrNull() ?: return@launch
 
                 for (captured in state.capturedPages) {
                     repository.addPage(documentId, captured.imageUri.toString(), fileSizeBytes = 0, qualityTier = state.qualityTier.ordinal)
@@ -353,7 +353,7 @@ class ScannerViewModel @Inject constructor(
             val automations = repository.getAutomationsForTagIds(tagIds)
                 .filter { it.triggerEvent == TriggerEvent.CREATE }
             if (automations.isNotEmpty()) {
-                val doc = repository.getDocument(docId) ?: return@launch
+                val doc = repository.getDocument(docId).getOrNull() ?: return@launch
                 workflowExecutor.execute(doc, automations)
             }
         }

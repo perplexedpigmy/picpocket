@@ -14,8 +14,8 @@ import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Tag
 import com.docscanner.data.repository.DocumentRepository
 import com.docscanner.di.SearchablePdf
-import com.docscanner.domain.pdf.PageSize
-import com.docscanner.domain.pdf.PdfGenerator
+import com.docscanner.domain.export.PageSize
+import com.docscanner.domain.export.PdfGenerator
 import com.docscanner.ui.components.MatchMode
 import com.docscanner.util.ZipUtil
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -112,7 +112,7 @@ class HomeViewModel @Inject constructor(
             combine(_searchInContent, _debouncedQuery) { a, b -> a to b }
                 .collectLatest { (inContent, query) ->
                     if (inContent && query.isNotBlank()) {
-                        _ocrMatchIds.value = repository.searchDocumentsByOcrText(query)
+                        _ocrMatchIds.value = repository.searchDocumentsByOcrText(query).getOrNull() ?: emptySet()
                     } else {
                         _ocrMatchIds.value = emptySet()
                     }
@@ -297,7 +297,7 @@ class HomeViewModel @Inject constructor(
         val name = _uiState.value.renameText
         if (name.isBlank()) return
         viewModelScope.launch {
-            val existing = repository.getDocumentsByName(name)
+            val existing = repository.getDocumentsByName(name).getOrNull() ?: emptyList()
             val conflict = existing.firstOrNull { it.id != docId }
             if (conflict != null) {
                 _uiState.update { it.copy(showRenameOverwriteDialog = true, renameOverwriteTargetName = name) }
@@ -425,9 +425,9 @@ class HomeViewModel @Inject constructor(
         val state = _uiState.value
         val docId = state.pendingExportDocIds.firstOrNull() ?: return
         viewModelScope.launch {
-            val doc = repository.getDocument(docId)
+            val doc = repository.getDocument(docId).getOrNull()
             if (doc != null) {
-                val pages = repository.getPages(docId) ?: emptyList()
+                val pages = repository.getPages(docId).getOrNull() ?: emptyList()
                 if (pages.isNotEmpty()) {
                     val result = pdfGenerator.generate(context, pages, outputUri, state.exportPageSize)
                 }
@@ -478,8 +478,7 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun generateTempPdf(context: Context, doc: Document): Uri? {
-        val pages = repository.getPages(doc.id)
-        if (pages.isEmpty()) return null
+        val pages = repository.getPages(doc.id).getOrNull() ?: return null
         val tempDir = File(context.cacheDir, "exports")
         tempDir.mkdirs()
         val tempFile = File(tempDir, "${doc.id}.pdf")
@@ -488,8 +487,8 @@ class HomeViewModel @Inject constructor(
         val pageSize = docPageSize ?: prefs.getString("page_size", PageSize.A4.name)?.let { try { PageSize.valueOf(it) } catch (_: Exception) { null } } ?: PageSize.A4
         val result = pdfGenerator.generate(context, pages, Uri.fromFile(tempFile), pageSize)
         return when (result) {
-            is com.docscanner.domain.pdf.PdfResult.Success -> Uri.fromFile(tempFile)
-            is com.docscanner.domain.pdf.PdfResult.Error -> null
+            is com.docscanner.domain.export.PdfResult.Success -> Uri.fromFile(tempFile)
+            is com.docscanner.domain.export.PdfResult.Error -> null
         }
     }
 

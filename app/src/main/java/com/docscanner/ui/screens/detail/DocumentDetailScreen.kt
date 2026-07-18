@@ -74,7 +74,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.DocumentId
-import com.docscanner.domain.pdf.PageSize
+import com.docscanner.domain.export.PageSize
 import com.docscanner.domain.scan.QualityTier
 import com.docscanner.ui.components.ShareOptionsSheet
 import com.docscanner.ui.components.TagSelectorSheet

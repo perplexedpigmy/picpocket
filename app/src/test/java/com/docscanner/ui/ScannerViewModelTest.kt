@@ -15,7 +15,7 @@ import com.docscanner.domain.filter.GrayscaleFilter
 import com.docscanner.domain.filter.SharpenFilter
 import com.docscanner.domain.ocr.FakeOcrEngine
 import com.docscanner.domain.ocr.OcrManager
-import com.docscanner.domain.pdf.FakePdfGenerator
+import com.docscanner.domain.export.FakePdfGenerator
 import com.docscanner.domain.scanner.ScannerResult
 import com.docscanner.ui.screens.scanner.ScannerViewModel
 import com.docscanner.util.MainCoroutineRule
@@ -224,14 +224,14 @@ class ScannerViewModelTest {
 
     @Test
     fun `append mode sets isAppendMode flag`() = runTest {
-        val docId = repo.createDocument("Append Test")
+        val docId = repo.createDocument("Append Test").getOrThrow()
         viewModel.setExistingDocumentId(docId)
         assertTrue(viewModel.uiState.value.isAppendMode)
     }
 
     @Test
     fun `append mode adds captured page to list`() = runTest {
-        val docId = repo.createDocument("Append Test")
+        val docId = repo.createDocument("Append Test").getOrThrow()
         viewModel.setExistingDocumentId(docId)
 
         viewModel.onScannerResult(
@@ -338,7 +338,7 @@ class ScannerViewModelTest {
 
     @Test
     fun `per-doc page size is passed to createDocument`() = runTest {
-        viewModel.setExportPageSize(com.docscanner.domain.pdf.PageSize.A3)
+        viewModel.setExportPageSize(com.docscanner.domain.export.PageSize.A3)
         viewModel.updateDocumentName("PageSizeTest")
         val uri = createTempImageUri()
         viewModel.onScannerResult(ScannerResult.PageCaptured(uri))
@@ -347,7 +347,7 @@ class ScannerViewModelTest {
 
         viewModel.completeSave()
         val savedId = viewModel.uiState.value.savedDocumentId ?: error("No saved document")
-        val doc = repo.getDocument(savedId)
+        val doc = repo.getDocument(savedId).getOrNull()
         assertNotNull(doc)
         assertEquals("PageSize should be A3", "A3", doc!!.pageSize)
     }

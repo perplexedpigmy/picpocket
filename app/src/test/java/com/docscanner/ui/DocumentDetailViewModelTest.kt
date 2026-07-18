@@ -6,7 +6,7 @@ import com.docscanner.data.FakeDocumentRepository
 import com.docscanner.data.store.DocumentStore
 import com.docscanner.domain.ocr.FakeOcrEngine
 import com.docscanner.domain.ocr.OcrManager
-import com.docscanner.domain.pdf.FakePdfGenerator
+import com.docscanner.domain.export.FakePdfGenerator
 import com.docscanner.ui.screens.detail.DocumentDetailViewModel
 import com.docscanner.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -37,7 +37,7 @@ class DocumentDetailViewModelTest {
     @Before
     fun setUp() = runTest {
         repo = FakeDocumentRepository()
-        documentId = repo.createDocument("My Document")
+        documentId = repo.createDocument("My Document").getOrThrow()
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         val app = RuntimeEnvironment.getApplication() as Application
@@ -74,7 +74,7 @@ class DocumentDetailViewModelTest {
         viewModel.renameDocument()
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
-        val doc = repo.getDocument(documentId)
+        val doc = repo.getDocument(documentId).getOrNull()
         assertEquals("Renamed Document", doc?.name)
         assertFalse(viewModel.uiState.value.showRenameDialog)
     }
@@ -168,7 +168,7 @@ class DocumentDetailViewModelTest {
         coroutineRule.dispatcher.scheduler.advanceUntilIdle()
 
         assertFalse("Dialog should be dismissed after confirm", viewModel.uiState.value.showRenameOverwriteDialog)
-        val doc = repo.getDocument(documentId)
+        val doc = repo.getDocument(documentId).getOrNull()
         assertEquals("Document should be renamed to target", "Target Name", doc?.name)
     }
 
@@ -200,7 +200,7 @@ class DocumentDetailViewModelTest {
 
         assertFalse("Overwrite dialog should not show for unique rename",
             viewModel.uiState.value.showRenameOverwriteDialog)
-        val doc = repo.getDocument(documentId)
+        val doc = repo.getDocument(documentId).getOrNull()
         assertEquals("Totally New Name", doc?.name)
     }
 

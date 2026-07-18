@@ -56,54 +56,65 @@ class DocumentStore @Inject constructor(
     fun pageFile(documentId: String, filename: String): File =
         File(documentDir(documentId), filename)
 
-    suspend fun readMetadata(documentId: String): StoredDocument? = withContext(Dispatchers.IO) {
+    suspend fun readMetadata(documentId: String): Result<StoredDocument> = withContext(Dispatchers.IO) {
         val file = metadataFile(documentId)
-        if (!file.exists()) return@withContext null
+        if (!file.exists()) return@withContext Result.failure(Exception("Document not found: $documentId"))
         try {
-            json.decodeFromString<StoredDocument>(file.readText())
-        } catch (_: Exception) { null }
+            Result.success(json.decodeFromString<StoredDocument>(file.readText()))
+        } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun writeMetadata(documentId: String, doc: StoredDocument) = withContext(Dispatchers.IO) {
-        val dir = documentDir(documentId)
-        dir.mkdirs()
-        val tmp = File(dir, "metadata.json.tmp")
-        val dest = metadataFile(documentId)
-        tmp.writeText(json.encodeToString(doc))
-        tmp.renameTo(dest)
+    suspend fun writeMetadata(documentId: String, doc: StoredDocument): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val dir = documentDir(documentId)
+            dir.mkdirs()
+            val tmp = File(dir, "metadata.json.tmp")
+            val dest = metadataFile(documentId)
+            tmp.writeText(json.encodeToString(doc))
+            tmp.renameTo(dest)
+            Result.success(Unit)
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     suspend fun createDocument(
         name: String,
         qualityTier: Int = 0,
         pageSize: String? = null,
-    ): StoredDocument = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val id = UUID.randomUUID().toString()
-        val doc = StoredDocument(
-            id = id,
-            name = name,
-            createdAt = now,
-            updatedAt = now,
-            qualityTier = qualityTier,
-            pageSize = pageSize,
-        )
-        writeMetadata(id, doc)
-        doc
+    ): Result<StoredDocument> = withContext(Dispatchers.IO) {
+        try {
+            val now = System.currentTimeMillis()
+            val id = UUID.randomUUID().toString()
+            val doc = StoredDocument(
+                id = id,
+                name = name,
+                createdAt = now,
+                updatedAt = now,
+                qualityTier = qualityTier,
+                pageSize = pageSize,
+            )
+            writeMetadata(id, doc).getOrElse { return@withContext Result.failure(it) }
+            Result.success(doc)
+        } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun listDocuments(): List<StoredDocument> = withContext(Dispatchers.IO) {
-        val root = documentsRoot
-        if (!root.exists()) return@withContext emptyList()
-        root.listFiles()
-            ?.filter { it.isDirectory }
-            ?.mapNotNull { dir -> readMetadata(dir.name) }
-            ?.sortedByDescending { it.updatedAt }
-            ?: emptyList()
+    suspend fun listDocuments(): Result<List<StoredDocument>> = withContext(Dispatchers.IO) {
+        try {
+            val root = documentsRoot
+            if (!root.exists()) return@withContext Result.success(emptyList())
+            val docs = root.listFiles()
+                ?.filter { it.isDirectory }
+                ?.mapNotNull { dir -> readMetadata(dir.name).getOrNull() }
+                ?.sortedByDescending { it.updatedAt }
+                ?: emptyList()
+            Result.success(docs)
+        } catch (e: Exception) { Result.failure(e) }
     }
 
-    suspend fun deleteDocument(documentId: String) = withContext(Dispatchers.IO) {
-        documentDir(documentId).deleteRecursively()
+    suspend fun deleteDocument(documentId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            documentDir(documentId).deleteRecursively()
+            Result.success(Unit)
+        } catch (e: Exception) { Result.failure(e) }
     }
 
     suspend fun addPage(
@@ -113,8 +124,8 @@ class DocumentStore @Inject constructor(
         fileSizeBytes: Long,
         filterTypeOrdinal: Int = 0,
         createdAt: Long = System.currentTimeMillis(),
-    ) = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         doc.pages.add(
             StoredPage(
                 pageNumber = pageNumber,
@@ -127,17 +138,18 @@ class DocumentStore @Inject constructor(
         writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis(), pages = doc.pages))
     }
 
-    suspend fun removePage(documentId: String, pageNumber: Int) = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext
+    suspend fun removePage(documentId: String, pageNumber: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         doc.pages.removeAll { it.pageNumber == pageNumber }
         renumberPages(doc)
         writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis()))
         val pageFile = pageFile(documentId, filenameForPage(pageNumber))
         pageFile.delete()
+        Result.success(Unit)
     }
 
-    suspend fun reorderPages(documentId: String, orderedPageNumbers: List<Int>) = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext
+    suspend fun reorderPages(documentId: String, orderedPageNumbers: List<Int>): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         val pageMap = doc.pages.associateBy { it.pageNumber }
         val reordered = orderedPageNumbers.mapNotNull { pageMap[it] }
         val updated = reordered.mapIndexed { index, page ->
@@ -146,34 +158,34 @@ class DocumentStore @Inject constructor(
         writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
     }
 
-    suspend fun updatePageOcrText(documentId: String, pageNumber: Int, ocrText: String) = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext
+    suspend fun updatePageOcrText(documentId: String, pageNumber: Int, ocrText: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
-        if (idx < 0) return@withContext
+        if (idx < 0) return@withContext Result.failure(Exception("Page $pageNumber not found"))
         doc.pages[idx] = doc.pages[idx].copy(ocrText = ocrText)
         writeMetadata(documentId, doc.copy(pages = doc.pages))
     }
 
-    suspend fun updateDocumentName(documentId: String, name: String) = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext
+    suspend fun updateDocumentName(documentId: String, name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         writeMetadata(documentId, doc.copy(name = name, updatedAt = System.currentTimeMillis()))
     }
 
-    suspend fun nextPageNumber(documentId: String): Int = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId)
-        (doc?.pages?.maxOfOrNull { it.pageNumber } ?: 0) + 1
+    suspend fun nextPageNumber(documentId: String): Result<Int> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
+        Result.success((doc.pages.maxOfOrNull { it.pageNumber } ?: 0) + 1)
     }
 
-    suspend fun totalFileSize(documentId: String): Long = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext 0L
-        doc.pages.sumOf { it.fileSizeBytes }
+    suspend fun totalFileSize(documentId: String): Result<Long> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
+        Result.success(doc.pages.sumOf { it.fileSizeBytes })
     }
 
     fun filenameForPage(pageNumber: Int): String =
         "%05d".format(pageNumber)
 
-    suspend fun replacePages(documentId: String, keptFilenames: List<String>): List<String> = withContext(Dispatchers.IO) {
-        val doc = readMetadata(documentId) ?: return@withContext emptyList()
+    suspend fun replacePages(documentId: String, keptFilenames: List<String>): Result<List<String>> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         val kept = keptFilenames.mapNotNull { filename ->
             doc.pages.find { it.filename == filename }
         }
@@ -182,14 +194,15 @@ class DocumentStore @Inject constructor(
 
         if (kept.isEmpty()) {
             deleteDocument(documentId)
-            return@withContext removed.map { it.filename }
+            return@withContext Result.success(removed.map { it.filename })
         }
 
         val updated = kept.mapIndexed { index, page ->
             page.copy(pageNumber = index + 1)
         }
-        writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
-        removed.map { it.filename }
+        val writeResult = writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
+        writeResult.getOrElse { return@withContext Result.failure(it) }
+        Result.success(removed.map { it.filename })
     }
 
     private fun renumberPages(doc: StoredDocument) {

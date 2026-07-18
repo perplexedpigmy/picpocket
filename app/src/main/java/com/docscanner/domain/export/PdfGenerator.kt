@@ -1,4 +1,4 @@
-package com.docscanner.domain.pdf
+package com.docscanner.domain.export
 
 import android.content.Context
 import android.net.Uri

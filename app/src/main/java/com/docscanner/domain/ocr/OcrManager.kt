@@ -12,7 +12,7 @@ class OcrManager @Inject constructor(
 ) {
 
     open suspend fun runOcr(documentId: String) {
-        val doc = store.readMetadata(documentId) ?: return
+        val doc = store.readMetadata(documentId).getOrNull() ?: return
         if (doc.ocrComplete) return
         val pending = doc.pages.filter { it.ocrText == null }
         if (pending.isEmpty()) return
@@ -22,7 +22,7 @@ class OcrManager @Inject constructor(
             val result = ocrEngine.recognize(bitmap)
             store.updatePageOcrText(documentId, page.pageNumber, result.text)
         }
-        val updated = store.readMetadata(documentId) ?: return
+        val updated = store.readMetadata(documentId).getOrNull() ?: return
         val allDone = updated.pages.all { it.ocrText != null }
         if (allDone) {
             store.writeMetadata(documentId, updated.copy(ocrComplete = true))

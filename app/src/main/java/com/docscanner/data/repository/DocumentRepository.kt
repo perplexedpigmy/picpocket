@@ -11,21 +11,21 @@ interface DocumentRepository {
     fun observeDocuments(): Flow<List<Document>>
     fun observeDocument(documentId: DocumentId): Flow<Document?>
     fun observePages(documentId: DocumentId): Flow<List<Page>>
-    suspend fun getDocument(documentId: DocumentId): Document?
-    suspend fun getPages(documentId: DocumentId): List<Page>
-    suspend fun createDocument(name: String, qualityTier: Int = 0, pageSize: String? = null): DocumentId
-    suspend fun addPage(documentId: DocumentId, imageUri: String, filterTypeOrdinal: Int = 0, fileSizeBytes: Long = 0, qualityTier: Int = 0)
-    suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String)
-    suspend fun updateDocumentName(documentId: DocumentId, name: String)
-    suspend fun getDocumentsByName(name: String): List<Document>
-    suspend fun getAllDocuments(): List<Document>
-    suspend fun deleteDocumentsByName(name: String)
-    suspend fun deleteDocuments(documentIds: List<DocumentId>)
-    suspend fun deleteDocument(documentId: DocumentId)
-    suspend fun deletePage(documentId: DocumentId, pageNumber: Int)
-    suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>)
-    suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>)
-    suspend fun searchDocumentsByOcrText(query: String): Set<DocumentId>
+    suspend fun getDocument(documentId: DocumentId): Result<Document>
+    suspend fun getPages(documentId: DocumentId): Result<List<Page>>
+    suspend fun createDocument(name: String, qualityTier: Int = 0, pageSize: String? = null): Result<DocumentId>
+    suspend fun addPage(documentId: DocumentId, imageUri: String, filterTypeOrdinal: Int = 0, fileSizeBytes: Long = 0, qualityTier: Int = 0): Result<Unit>
+    suspend fun updatePageOcrText(documentId: DocumentId, pageNumber: Int, ocrText: String): Result<Unit>
+    suspend fun updateDocumentName(documentId: DocumentId, name: String): Result<Unit>
+    suspend fun getDocumentsByName(name: String): Result<List<Document>>
+    suspend fun getAllDocuments(): Result<List<Document>>
+    suspend fun deleteDocumentsByName(name: String): Result<Unit>
+    suspend fun deleteDocuments(documentIds: List<DocumentId>): Result<Unit>
+    suspend fun deleteDocument(documentId: DocumentId): Result<Unit>
+    suspend fun deletePage(documentId: DocumentId, pageNumber: Int): Result<Unit>
+    suspend fun replacePages(documentId: DocumentId, keptFilenames: List<String>): Result<Unit>
+    suspend fun reorderPages(documentId: DocumentId, pageNumbers: List<Int>): Result<Unit>
+    suspend fun searchDocumentsByOcrText(query: String): Result<Set<DocumentId>>
 
     fun observeAllTags(): Flow<List<Tag>>
     fun observeDocumentTags(documentId: DocumentId): Flow<List<Tag>>

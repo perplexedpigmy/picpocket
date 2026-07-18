@@ -29,7 +29,7 @@ class PageViewerViewModelTest {
     @Before
     fun setUp() = runTest {
         repo = FakeDocumentRepository()
-        documentId = repo.createDocument("Viewer Test")
+        documentId = repo.createDocument("Viewer Test").getOrThrow()
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         repo.addPage(documentId, "content://page3.jpg")
