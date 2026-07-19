@@ -6,7 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.core.content.FileProvider
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
@@ -73,8 +72,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import coil.compose.SubcomposeAsyncImage
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.DocumentId
@@ -590,39 +589,30 @@ private fun PageThumbnail(
             .aspectRatio(0.7f),
     ) {
         Box {
-            val bitmap = remember(imageUri) {
-                val path = android.net.Uri.parse(imageUri).path
-                if (path != null) {
-                    try {
-                        android.graphics.BitmapFactory.decodeFile(path)
-                    } catch (_: Exception) { null }
-                } else null
-            }
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Page $pageNumber",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .then(
-                            if (!isEditMode) Modifier.combinedClickable(
-                                onClick = {},
-                                onLongClick = null,
-                                onDoubleClick = onView,
-                            ) else Modifier
-                        ),
-                    contentScale = ContentScale.Fit,
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Failed to load", style = MaterialTheme.typography.labelSmall)
-                }
-            }
+            SubcomposeAsyncImage(
+                model = imageUri,
+                contentDescription = "Page $pageNumber",
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(
+                        if (!isEditMode) Modifier.combinedClickable(
+                            onClick = {},
+                            onLongClick = null,
+                            onDoubleClick = onView,
+                        ) else Modifier
+                    ),
+                contentScale = ContentScale.Fit,
+                error = {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Failed to load", style = MaterialTheme.typography.labelSmall)
+                    }
+                },
+            )
             if (isMarkedForDeletion) {
                 Box(
                     modifier = Modifier

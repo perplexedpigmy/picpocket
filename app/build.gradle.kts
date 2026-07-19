@@ -76,6 +76,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    implementation("io.coil-kt:coil-compose:2.6.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
@@ -175,9 +176,11 @@ if (alignScript.exists()) {
                 val mergedDir = file("build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out")
                 fileTree(mergedDir).matching { include("**/*.so") }.forEach { so ->
                     if (so.name in libsToAlign) {
-                        exec {
-                            commandLine("python3", alignScript.absolutePath, so.absolutePath)
-                        }
+                        ProcessBuilder("python3", alignScript.absolutePath, so.absolutePath)
+                            .directory(project.projectDir)
+                            .inheritIO()
+                            .start()
+                            .waitFor()
                     }
                 }
             }

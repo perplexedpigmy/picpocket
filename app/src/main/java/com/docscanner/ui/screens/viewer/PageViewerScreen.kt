@@ -2,7 +2,6 @@ package com.docscanner.ui.screens.viewer
 
 import android.graphics.BitmapFactory
 import android.net.Uri
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -28,6 +27,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,7 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.asImageBitmap
+import coil.compose.SubcomposeAsyncImage
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
@@ -47,7 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.docscanner.data.model.DocumentId
 import com.docscanner.data.model.Page
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -140,20 +142,19 @@ fun PageViewerScreen(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ZoomablePage(page: Page) {
-    val bitmap = remember(page.imageUri) {
-        val path = Uri.parse(page.imageUri).path
-        if (path != null) {
-            try {
-                BitmapFactory.decodeFile(path)
-            } catch (_: Exception) { null }
-        } else null
-    }
+    var imageWidth by remember(page.imageUri) { mutableIntStateOf(0) }
+    var imageHeight by remember(page.imageUri) { mutableIntStateOf(0) }
 
-    if (bitmap == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("Failed to load page", style = MaterialTheme.typography.bodyMedium)
+    LaunchedEffect(page.imageUri) {
+        withContext(Dispatchers.IO) {
+            val path = Uri.parse(page.imageUri).path
+            if (path != null) {
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, opts)
+                imageWidth = opts.outWidth
+                imageHeight = opts.outHeight
+            }
         }
-        return
     }
 
     var scale by remember { mutableFloatStateOf(1f) }
@@ -182,12 +183,14 @@ private fun ZoomablePage(page: Page) {
 
                         if (isMultiTouch || scale > 1f) {
                             scale = (scale * zoomChange).coerceIn(1f, 5f)
+                            val w = imageWidth.coerceAtLeast(1)
+                            val h = imageHeight.coerceAtLeast(1)
                             val fitScale = minOf(
-                                containerSize.width.toFloat() / bitmap.width,
-                                containerSize.height.toFloat() / bitmap.height,
+                                containerSize.width.toFloat() / w,
+                                containerSize.height.toFloat() / h,
                             )
-                            val displayedWidth = bitmap.width * fitScale
-                            val displayedHeight = bitmap.height * fitScale
+                            val displayedWidth = w * fitScale
+                            val displayedHeight = h * fitScale
                             val maxPanX = ((scale - 1f) * displayedWidth / 2f).coerceAtLeast(0f)
                             val maxPanY = ((scale - 1f) * displayedHeight / 2f).coerceAtLeast(0f)
                             offsetX = (offsetX + panChange.x).coerceIn(-maxPanX, maxPanX)
@@ -222,11 +225,21 @@ private fun ZoomablePage(page: Page) {
             },
         contentAlignment = Alignment.Center,
     ) {
-        Image(
-            bitmap = bitmap.asImageBitmap(),
+        SubcomposeAsyncImage(
+            model = page.imageUri,
             contentDescription = "Page ${page.pageNumber}",
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Fit,
+            error = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Failed to load page", style = MaterialTheme.typography.bodyMedium)
+                }
+            },
         )
     }
 }
