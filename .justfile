@@ -30,7 +30,7 @@ test:
 
 # Install APK on connected device
 install: build
-    adb install -r {{APK_PATH}}
+    adb -d install -r {{APK_PATH}}
     @echo "Installed successfully!"
 
 # Uninstall from connected device

@@ -10,6 +10,9 @@ import com.docscanner.ui.screens.detail.DocumentDetailScreen
 import com.docscanner.ui.screens.home.HomeScreen
 import com.docscanner.ui.screens.scanner.ScannerScreen
 import com.docscanner.ui.screens.donate.DonateScreen
+import com.docscanner.ui.screens.conflicts.ConflictResolutionScreen
+import com.docscanner.ui.screens.deleted.DeletedDocumentsScreen
+import com.docscanner.ui.screens.pairing.DevicePairingScreen
 import com.docscanner.ui.screens.settings.SettingsScreen
 import com.docscanner.ui.screens.tags.TagManagementScreen
 import com.docscanner.ui.screens.viewer.PageViewerScreen
@@ -23,6 +26,9 @@ object Routes {
     const val SETTINGS = "settings"
     const val DONATE = "donate"
     const val TAGS = "tags"
+    const val CONFLICTS = "conflicts"
+    const val DELETED = "deleted"
+    const val PAIRING = "pairing"
 
     fun documentDetail(documentId: String) = "document/$documentId"
     fun pageViewer(documentId: String, pageIndex: Int) = "viewer/$documentId/$pageIndex"
@@ -98,6 +104,24 @@ fun DocScannerNavGraph(navController: NavHostController) {
                 onNavigateBack = { navController.popBackStack() },
                 onDonateClick = { navController.navigate(Routes.DONATE) },
                 onTagsClick = { navController.navigate(Routes.TAGS) },
+                onConflictsClick = { navController.navigate(Routes.CONFLICTS) },
+                onDeletedClick = { navController.navigate(Routes.DELETED) },
+                onPairingClick = { navController.navigate(Routes.PAIRING) },
+            )
+        }
+        composable(Routes.CONFLICTS) {
+            ConflictResolutionScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+        composable(Routes.DELETED) {
+            DeletedDocumentsScreen(
+                onNavigateBack = { navController.popBackStack() },
+            )
+        }
+        composable(Routes.PAIRING) {
+            DevicePairingScreen(
+                onNavigateBack = { navController.popBackStack() },
             )
         }
         composable(Routes.DONATE) {

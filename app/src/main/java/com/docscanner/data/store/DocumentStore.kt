@@ -23,6 +23,10 @@ data class StoredDocument(
     val qualityTier: Int = 0,
     val ocrComplete: Boolean = false,
     val pageSize: String? = null,
+    val syncVersion: Int = 0,
+    val syncTimestamp: Long = 0L,
+    val syncDirty: Boolean = false,
+    val syncExclude: Boolean = false,
 )
 
 @Serializable
@@ -135,14 +139,14 @@ class DocumentStore @Inject constructor(
                 createdAt = createdAt,
             )
         )
-        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis(), pages = doc.pages))
+        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis(), pages = doc.pages, syncDirty = true))
     }
 
     suspend fun removePage(documentId: String, pageNumber: Int): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         doc.pages.removeAll { it.pageNumber == pageNumber }
         renumberPages(doc)
-        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis()))
+        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis(), syncDirty = true))
         val pageFile = pageFile(documentId, filenameForPage(pageNumber))
         pageFile.delete()
         Result.success(Unit)
@@ -155,7 +159,7 @@ class DocumentStore @Inject constructor(
         val updated = reordered.mapIndexed { index, page ->
             page.copy(pageNumber = index + 1)
         }
-        writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
+        writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis(), syncDirty = true))
     }
 
     suspend fun updatePageOcrText(documentId: String, pageNumber: Int, ocrText: String): Result<Unit> = withContext(Dispatchers.IO) {
@@ -163,12 +167,12 @@ class DocumentStore @Inject constructor(
         val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
         if (idx < 0) return@withContext Result.failure(Exception("Page $pageNumber not found"))
         doc.pages[idx] = doc.pages[idx].copy(ocrText = ocrText)
-        writeMetadata(documentId, doc.copy(pages = doc.pages))
+        writeMetadata(documentId, doc.copy(pages = doc.pages, syncDirty = true))
     }
 
     suspend fun updateDocumentName(documentId: String, name: String): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
-        writeMetadata(documentId, doc.copy(name = name, updatedAt = System.currentTimeMillis()))
+        writeMetadata(documentId, doc.copy(name = name, updatedAt = System.currentTimeMillis(), syncDirty = true))
     }
 
     suspend fun nextPageNumber(documentId: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -192,6 +196,7 @@ class DocumentStore @Inject constructor(
             pages = doc.pages,
             ocrComplete = false,
             updatedAt = System.currentTimeMillis(),
+            syncDirty = true,
         ))
     }
 
@@ -219,9 +224,14 @@ class DocumentStore @Inject constructor(
         val updated = kept.mapIndexed { index, page ->
             page.copy(pageNumber = index + 1)
         }
-        val writeResult = writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
+        val writeResult = writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis(), syncDirty = true))
         writeResult.getOrElse { return@withContext Result.failure(it) }
         Result.success(removed.map { it.filename })
+    }
+
+    suspend fun updateSyncExclude(documentId: String, excluded: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
+        writeMetadata(documentId, doc.copy(syncExclude = excluded))
     }
 
     private fun renumberPages(doc: StoredDocument) {

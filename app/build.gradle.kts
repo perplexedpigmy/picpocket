@@ -4,6 +4,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
     id("com.google.dagger.hilt.android")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -48,8 +49,17 @@ android {
     }
 
     packaging {
+        jniLibs {
+            keepDebugSymbols += setOf(
+                "**/libandroidx.graphics.path.so",
+                "**/libbarhopper_v3.so",
+                "**/libimage_processing_util_jni.so",
+                "**/libmlkit_google_ocr_pipeline.so",
+            )
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/DEPENDENCIES"
         }
     }
 }
@@ -67,8 +77,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-process:2.7.0")
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // Core
@@ -81,6 +93,8 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.50")
     ksp("com.google.dagger:hilt-android-compiler:2.50")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    ksp("androidx.hilt:hilt-compiler:1.2.0")
 
     // Room
     implementation("androidx.room:room-runtime:2.6.1")
@@ -96,8 +110,33 @@ dependencies {
     // ML Kit Text Recognition
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
-    // QR Code generation
+    // QR Code generation / scanning
     implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
+
+    // CameraX for QR scanning
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+
+    // Google Drive API
+    implementation("com.google.api-client:google-api-client-android:2.2.0")
+    implementation("com.google.http-client:google-http-client-gson:1.44.1")
+    implementation("com.google.android.gms:play-services-auth:21.1.0")
+    implementation("com.google.apis:google-api-services-drive:v3-rev20230815-2.0.0") { exclude("org.apache.httpcomponents", "httpclient") }
+
+    // WorkManager
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // Security / Encryption
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // Biometric auth
+    implementation("androidx.biometric:biometric:1.2.0-alpha05")
+
+    // Argon2 key derivation (via Bouncy Castle)
+    implementation("org.bouncycastle:bcprov-jdk18on:1.77")
 
     // Testing — JVM unit tests
     testImplementation("junit:junit:4.13.2")
@@ -118,4 +157,32 @@ dependencies {
     kspAndroidTest("com.google.dagger:hilt-android-compiler:2.50")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+val alignScript = rootProject.file("tmp/align_elf.py")
+if (alignScript.exists()) {
+    val libsToAlign = setOf(
+        "libandroidx.graphics.path.so",
+        "libbarhopper_v3.so",
+        "libimage_processing_util_jni.so",
+        "libmlkit_google_ocr_pipeline.so",
+    )
+
+    afterEvaluate {
+        val alignDebugTask = tasks.register("alignDebugNativeLibs") {
+            dependsOn(tasks.named("mergeDebugNativeLibs"))
+            doLast {
+                val mergedDir = file("build/intermediates/merged_native_libs/debug/mergeDebugNativeLibs/out")
+                fileTree(mergedDir).matching { include("**/*.so") }.forEach { so ->
+                    if (so.name in libsToAlign) {
+                        exec {
+                            commandLine("python3", alignScript.absolutePath, so.absolutePath)
+                        }
+                    }
+                }
+            }
+        }
+        tasks.named("stripDebugDebugSymbols") { dependsOn(alignDebugTask) }
+        tasks.named("packageDebug") { dependsOn(alignDebugTask) }
+    }
 }

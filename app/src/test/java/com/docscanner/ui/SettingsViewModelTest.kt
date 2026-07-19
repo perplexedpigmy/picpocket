@@ -2,11 +2,16 @@ package com.docscanner.ui
 
 import androidx.test.core.app.ApplicationProvider
 import com.docscanner.domain.export.PageSize
+import com.docscanner.drive.DriveAuthManager
+import com.docscanner.drive.EncryptionManager
+import com.docscanner.drive.PassphraseStore
+import com.docscanner.drive.sync.SyncSettings
 import com.docscanner.ui.screens.settings.SettingsViewModel
 import com.docscanner.ui.theme.DarkMode
 import com.docscanner.ui.theme.Palette
 import com.docscanner.ui.theme.ThemeManager
 import com.docscanner.util.MainCoroutineRule
+import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,7 +36,14 @@ class SettingsViewModelTest {
     fun setUp() {
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         themeManager = ThemeManager(app)
-        viewModel = SettingsViewModel(app, themeManager)
+        viewModel = SettingsViewModel(
+            app,
+            themeManager,
+            mockk(relaxed = true),
+            EncryptionManager(),
+            PassphraseStore(app),
+            SyncSettings(app),
+        )
     }
 
     @Test

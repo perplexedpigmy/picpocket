@@ -59,6 +59,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -318,6 +319,17 @@ fun DocumentDetailScreen(
                                         "Add tags",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text("Exclude from sync", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                                    Switch(
+                                        checked = state.syncExcluded,
+                                        onCheckedChange = { viewModel.toggleSyncExclude(it) },
                                     )
                                 }
                             }

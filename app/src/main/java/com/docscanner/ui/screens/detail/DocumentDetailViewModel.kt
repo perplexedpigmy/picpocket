@@ -56,6 +56,7 @@ data class DetailUiState(
     val showRescanProgress: Boolean = false,
     val rescanPageNumber: Int? = null,
     val ocrRunning: Boolean = false,
+    val syncExcluded: Boolean = false,
 )
 
 
@@ -122,6 +123,17 @@ class DocumentDetailViewModel @Inject constructor(
             repository.observeDocumentTags(documentId).collect { tags ->
                 _uiState.update { it.copy(documentTags = tags) }
             }
+        }
+        viewModelScope.launch {
+            val doc = documentStore.readMetadata(documentId).getOrNull()
+            _uiState.update { it.copy(syncExcluded = doc?.syncExclude ?: false) }
+        }
+    }
+
+    fun toggleSyncExclude(excluded: Boolean) {
+        viewModelScope.launch {
+            documentStore.updateSyncExclude(currentDocumentId, excluded)
+            _uiState.update { it.copy(syncExcluded = excluded) }
         }
     }
 

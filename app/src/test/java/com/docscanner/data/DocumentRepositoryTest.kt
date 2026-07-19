@@ -9,6 +9,7 @@ import com.docscanner.data.repository.DocumentRepositoryImpl
 import com.docscanner.data.store.DocumentStore
 import com.docscanner.domain.ocr.OcrEngine
 import com.docscanner.domain.ocr.OcrManager
+import com.docscanner.domain.pdfimport.PdfPageImportResult
 import com.docscanner.domain.pdfimport.PdfPageImporter
 import com.docscanner.util.MainCoroutineRule
 import io.mockk.coEvery
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -355,5 +357,96 @@ class DocumentRepositoryTest {
 
         val result = repository.rescanPage(docId, pageNumber = 99, imageUri = tempPageUri())
         assertTrue("Should fail for nonexistent page", result.isFailure)
+    }
+
+    @Test
+    fun `importPdf with 3 pages creates document with 3 pages`() = runTest {
+        val mockImporter = mockk<PdfPageImporter>()
+        coEvery { mockImporter.import(any(), any(), any(), any()) } returns Result.success(
+            listOf(
+                PdfPageImportResult(1, "00001", 100L),
+                PdfPageImportResult(2, "00002", 200L),
+                PdfPageImportResult(3, "00003", 300L),
+            )
+        )
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val repo = DocumentRepositoryImpl(
+            store = DocumentStore(app),
+            tagDao = database.tagDao(),
+            tagAutomationDao = database.tagAutomationDao(),
+            pdfPageImporter = mockImporter,
+            ocrManager = createOcrManager(app),
+            app = app,
+        )
+
+        val uri = Uri.parse("content://test/test.pdf")
+        val result = repo.importPdf(uri)
+        assertTrue(result.isSuccess)
+        val docId = result.getOrThrow()
+        val doc = repo.getDocument(docId).getOrNull()
+        assertNotNull(doc)
+        assertEquals(3, doc?.pageCount)
+    }
+
+    @Test
+    fun `rescanPage replaces page image successfully`() = runTest {
+        val docId = repository.createDocument("Smoke rescan").getOrThrow()
+        repository.addPage(docId, tempPageUri())
+
+        val pages = repository.getPages(docId).getOrDefault(emptyList())
+        assertEquals(1, pages.size)
+        assertEquals(1, pages[0].pageNumber)
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val pageFile = File(app.filesDir, "documents/$docId/${pages[0].filename}")
+        val originalSize = pageFile.length()
+
+        val newImage = File.createTempFile("new_page", ".jpg")
+        newImage.writeBytes(byteArrayOf(4, 5, 6, 7))
+
+        val result = repository.rescanPage(docId, 1, Uri.fromFile(newImage).toString())
+        assertTrue(result.isSuccess)
+
+        val updatedSize = pageFile.length()
+        assertNotEquals("Page file size should change after rescan", originalSize, updatedSize)
+
+        val updatedPages = repository.getPages(docId).getOrDefault(emptyList())
+        assertEquals(1, updatedPages.size)
+        assertEquals(1, updatedPages[0].pageNumber)
+    }
+
+    @Test
+    fun `importPdf then rescanPage combined flow`() = runTest {
+        val mockImporter = mockk<PdfPageImporter>()
+        coEvery { mockImporter.import(any(), any(), any(), any()) } returns Result.success(
+            listOf(PdfPageImportResult(1, "00001", 100L))
+        )
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val repo = DocumentRepositoryImpl(
+            store = DocumentStore(app),
+            tagDao = database.tagDao(),
+            tagAutomationDao = database.tagAutomationDao(),
+            pdfPageImporter = mockImporter,
+            ocrManager = createOcrManager(app),
+            app = app,
+        )
+
+        val uri = Uri.parse("content://test/test.pdf")
+        val docId = repo.importPdf(uri).getOrThrow()
+
+        var doc = repo.getDocument(docId).getOrNull()
+        assertNotNull(doc)
+        assertEquals(1, doc?.pageCount)
+
+        val newImage = File.createTempFile("new_page", ".jpg")
+        newImage.writeBytes(byteArrayOf(4, 5, 6, 7))
+        val rescanResult = repo.rescanPage(docId, 1, Uri.fromFile(newImage).toString())
+        assertTrue(rescanResult.isSuccess)
+
+        doc = repo.getDocument(docId).getOrNull()
+        assertNotNull(doc)
+        assertEquals(1, doc?.pageCount)
     }
 }
