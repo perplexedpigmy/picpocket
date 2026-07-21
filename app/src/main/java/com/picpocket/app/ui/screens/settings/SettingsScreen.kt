@@ -45,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,6 +83,19 @@ fun SettingsScreen(
         contract = ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         viewModel.handleSignInResult(result)
+    }
+
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        viewModel.handleFolderPickerResult(uri)
+    }
+
+    if (folderPickerState is FolderPickerState.FolderPickRequired) {
+        LaunchedEffect(Unit) {
+            folderPickerLauncher.launch(null)
+            viewModel.folderPickLaunched()
+        }
     }
 
     Scaffold(
@@ -539,44 +553,22 @@ fun SettingsScreen(
         }
     }
 
-    when (folderPickerState) {
-        is FolderPickerState.Checking -> {
+    when (val state = folderPickerState) {
+        is FolderPickerState.Error -> {
             AlertDialog(
-                onDismissRequest = {},
-                title = { Text("Setting up Drive") },
-                text = { Text("Checking for existing PicPocket folder...") },
-                confirmButton = {},
-            )
-        }
-        is FolderPickerState.FoundExisting -> {
-            AlertDialog(
-                onDismissRequest = { viewModel.cancelFolderPicker() },
-                title = { Text("PicPocket Folder Found") },
-                text = { Text("Use the existing PicPocket folder on your Drive for sync?") },
+                onDismissRequest = { viewModel.dismissError() },
+                title = { Text("Folder Selection") },
+                text = { Text(state.message) },
                 confirmButton = {
-                    TextButton(onClick = { viewModel.confirmFolderPicker() }) {
-                        Text("Use Folder")
+                    TextButton(onClick = {
+                        viewModel.dismissError()
+                        folderPickerLauncher.launch(null)
+                    }) {
+                        Text("Try Again")
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { viewModel.cancelFolderPicker() }) {
-                        Text("Cancel")
-                    }
-                },
-            )
-        }
-        is FolderPickerState.NotFound -> {
-            AlertDialog(
-                onDismissRequest = { viewModel.cancelFolderPicker() },
-                title = { Text("Create PicPocket Folder") },
-                text = { Text("No PicPocket folder found on Drive. Create one at your Drive root for sync?") },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.confirmFolderPicker() }) {
-                        Text("Create")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.cancelFolderPicker() }) {
+                    TextButton(onClick = { viewModel.dismissError() }) {
                         Text("Cancel")
                     }
                 },

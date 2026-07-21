@@ -5,7 +5,6 @@ import com.picpocket.app.domain.export.PageSize
 import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.PassphraseStore
-import com.picpocket.app.drive.sync.DriveFileManager
 import com.picpocket.app.drive.sync.LocalDriveIndex
 import com.picpocket.app.drive.sync.SyncSettings
 import com.picpocket.app.ui.screens.settings.SettingsViewModel
@@ -45,7 +44,6 @@ class SettingsViewModelTest {
             EncryptionManager(),
             PassphraseStore(app),
             SyncSettings(app),
-            mockk(relaxed = true),
             mockk(relaxed = true),
         )
     }
