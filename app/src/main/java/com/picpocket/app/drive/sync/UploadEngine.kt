@@ -28,7 +28,7 @@ class UploadEngine @Inject constructor(
         val folderId = if (info.folderId.isNotBlank()) {
             info.folderId
         } else {
-            driveFileManager.createOrGetFolder(docId) ?: return false
+            driveFileManager.createOrGetFolder(docId, localDriveIndex.getRootFolderId().ifBlank { null }) ?: return false
         }
 
         for (page in doc.pages) {

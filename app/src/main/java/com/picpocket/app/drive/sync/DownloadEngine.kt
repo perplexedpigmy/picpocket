@@ -24,7 +24,7 @@ class DownloadEngine @Inject constructor(
     )
 
     suspend fun listRemoteDocuments(): List<RemoteDocument> {
-        val folders = driveFileManager.listAllFolders()
+        val folders = driveFileManager.listAllFolders(localDriveIndex.getRootFolderId().ifBlank { null })
         return folders.mapNotNull { folder: File ->
             val docId = folder.name
             val files = driveFileManager.findFilesInFolder(folder.id)

@@ -11,6 +11,8 @@ import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.PassphraseStore
+import com.picpocket.app.drive.sync.DriveFileManager
+import com.picpocket.app.drive.sync.LocalDriveIndex
 import com.picpocket.app.drive.sync.SyncSettings
 import com.picpocket.app.ui.theme.DarkMode
 import com.picpocket.app.ui.theme.Palette
@@ -32,6 +34,14 @@ data class SettingsUiState(
     val syncEnabled: Boolean = true,
 )
 
+sealed interface FolderPickerState {
+    data object Checking : FolderPickerState
+    data class FoundExisting(val folderId: String) : FolderPickerState
+    data object NotFound : FolderPickerState
+    data object Confirmed : FolderPickerState
+    data object Idle : FolderPickerState
+}
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     application: Application,
@@ -40,6 +50,8 @@ class SettingsViewModel @Inject constructor(
     private val encryptionManager: EncryptionManager,
     private val passphraseStore: PassphraseStore,
     private val syncSettings: SyncSettings,
+    private val driveFileManager: DriveFileManager,
+    private val localDriveIndex: LocalDriveIndex,
 ) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences("settings", 0)
@@ -48,6 +60,9 @@ class SettingsViewModel @Inject constructor(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     val driveAuthState: StateFlow<DriveAuthState> = driveAuthManager.authState
+
+    private val _folderPickerState = MutableStateFlow<FolderPickerState>(FolderPickerState.Idle)
+    val folderPickerState: StateFlow<FolderPickerState> = _folderPickerState.asStateFlow()
 
     val encryptionEnabled: Boolean
         get() = encryptionManager.isEncryptionEnabled
@@ -80,6 +95,44 @@ class SettingsViewModel @Inject constructor(
 
     fun handleSignInResult(result: ActivityResult) {
         driveAuthManager.handleSignInResult(result)
+        if (driveAuthManager.authState.value is DriveAuthState.Connected) {
+            checkOrSetupDriveFolder()
+        }
+    }
+
+    fun checkOrSetupDriveFolder() {
+        viewModelScope.launch {
+            if (localDriveIndex.getRootFolderId().isNotBlank()) {
+                _folderPickerState.value = FolderPickerState.Confirmed
+                return@launch
+            }
+            _folderPickerState.value = FolderPickerState.Checking
+            val existing = driveFileManager.findFolder("PicPocket")
+            if (existing != null) {
+                _folderPickerState.value = FolderPickerState.FoundExisting(existing)
+            } else {
+                _folderPickerState.value = FolderPickerState.NotFound
+            }
+        }
+    }
+
+    fun confirmFolderPicker() {
+        viewModelScope.launch {
+            val currentState = _folderPickerState.value
+            val folderId = when (currentState) {
+                is FolderPickerState.FoundExisting -> currentState.folderId
+                is FolderPickerState.NotFound -> {
+                    driveFileManager.createFolder("PicPocket") ?: return@launch
+                }
+                else -> return@launch
+            }
+            localDriveIndex.setRootFolderId(folderId)
+            _folderPickerState.value = FolderPickerState.Confirmed
+        }
+    }
+
+    fun cancelFolderPicker() {
+        _folderPickerState.value = FolderPickerState.Idle
     }
 
     fun signOut() {

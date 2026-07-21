@@ -17,28 +17,35 @@ class DriveFileManager @Inject constructor(
     private val service: Drive?
         get() = driveAuthManager.driveService
 
-    suspend fun createFolder(name: String): String? {
+    suspend fun createFolder(name: String, parentFolderId: String? = null): String? {
         val drive = service ?: return null
         val metadata = File().setName(name).setMimeType(FOLDER_MIME)
+        if (parentFolderId != null) {
+            metadata.parents = listOf(parentFolderId)
+        }
         val folder = drive.files().create(metadata)
             .setFields("id")
             .execute()
         return folder.id
     }
 
-    suspend fun findFolder(name: String): String? {
+    suspend fun findFolder(name: String, parentFolderId: String? = null): String? {
         val drive = service ?: return null
-        val query = "name = '$name' and mimeType = '$FOLDER_MIME' and trashed = false"
+        val query = buildString {
+            append("name = '$name' and mimeType = '$FOLDER_MIME' and trashed = false")
+            if (parentFolderId != null) {
+                append(" and '$parentFolderId' in parents")
+            }
+        }
         val result = drive.files().list()
             .setQ(query)
-            .setSpaces("appDataFolder")
             .setFields("files(id)")
             .execute()
         return result.files.firstOrNull()?.id
     }
 
-    suspend fun createOrGetFolder(name: String): String? {
-        return findFolder(name) ?: createFolder(name)
+    suspend fun createOrGetFolder(name: String, parentFolderId: String? = null): String? {
+        return findFolder(name, parentFolderId) ?: createFolder(name, parentFolderId)
     }
 
     suspend fun uploadFile(parentFolderId: String, fileName: String, data: ByteArray, mimeType: String = "application/octet-stream"): String? {
@@ -68,7 +75,6 @@ class DriveFileManager @Inject constructor(
         val query = "'$folderId' in parents and trashed = false"
         val result = drive.files().list()
             .setQ(query)
-            .setSpaces("appDataFolder")
             .setFields("files(id, name, mimeType, size)")
             .execute()
         return result.files
@@ -79,12 +85,16 @@ class DriveFileManager @Inject constructor(
         drive.files().delete(fileId).execute()
     }
 
-    suspend fun listAllFolders(): List<File> {
+    suspend fun listAllFolders(rootFolderId: String? = null): List<File> {
         val drive = service ?: return emptyList()
-        val query = "mimeType = '$FOLDER_MIME' and trashed = false"
+        val query = buildString {
+            append("mimeType = '$FOLDER_MIME' and trashed = false")
+            if (rootFolderId != null) {
+                append(" and '$rootFolderId' in parents")
+            }
+        }
         val result = drive.files().list()
             .setQ(query)
-            .setSpaces("appDataFolder")
             .setFields("files(id, name)")
             .execute()
         return result.files

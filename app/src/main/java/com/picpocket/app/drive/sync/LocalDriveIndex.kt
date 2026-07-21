@@ -14,6 +14,7 @@ data class DriveIndex(
     val devices: MutableMap<String, DeviceInfo> = mutableMapOf(),
     val documents: MutableMap<String, DocumentDriveInfo> = mutableMapOf(),
     var localDeviceId: String = "",
+    var rootFolderId: String = "",
 )
 
 @Serializable
@@ -74,6 +75,13 @@ class LocalDriveIndex @Inject constructor(
     }
 
     fun getAllKnownDeviceIds(): Set<String> = index.devices.keys
+
+    fun getRootFolderId(): String = index.rootFolderId
+
+    fun setRootFolderId(id: String) {
+        index.rootFolderId = id
+        save()
+    }
 
     private fun load(): DriveIndex {
         return if (file.exists()) {

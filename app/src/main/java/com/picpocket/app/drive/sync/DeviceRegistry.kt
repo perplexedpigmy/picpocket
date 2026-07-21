@@ -116,7 +116,7 @@ class DeviceRegistry @Inject constructor(
     suspend fun cleanDrive() {
         val allDeviceIds = localDriveIndex.getAllKnownDeviceIds()
         if (allDeviceIds.isEmpty()) return
-        val allFolders = driveFileManager.listAllFolders()
+        val allFolders = driveFileManager.listAllFolders(localDriveIndex.getRootFolderId().ifBlank { null })
 
         for (folder in allFolders) {
             val files = driveFileManager.findFilesInFolder(folder.id)

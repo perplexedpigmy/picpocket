@@ -139,7 +139,8 @@ class DeviceRegistryTest {
     @Test
     fun `cleanDrive does not purge when devices exist`() = runTest {
         every { localDriveIndex.getAllKnownDeviceIds() } returns setOf("device-1", "device-2")
-        coEvery { driveFileManager.listAllFolders() } returns emptyList()
+        every { localDriveIndex.getRootFolderId() } returns ""
+        coEvery { driveFileManager.listAllFolders(any()) } returns emptyList()
         registry.cleanDrive()
     }
 

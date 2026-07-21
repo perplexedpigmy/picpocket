@@ -76,6 +76,7 @@ fun SettingsScreen(
     val driveState by viewModel.driveAuthState.collectAsState()
     var showPageSizeMenu by remember { mutableStateOf(false) }
     var showQualityMenu by remember { mutableStateOf(false) }
+    val folderPickerState by viewModel.folderPickerState.collectAsState()
 
     val signInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult(),
@@ -538,6 +539,51 @@ fun SettingsScreen(
         }
     }
 
+    when (folderPickerState) {
+        is FolderPickerState.Checking -> {
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text("Setting up Drive") },
+                text = { Text("Checking for existing PicPocket folder...") },
+                confirmButton = {},
+            )
+        }
+        is FolderPickerState.FoundExisting -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.cancelFolderPicker() },
+                title = { Text("PicPocket Folder Found") },
+                text = { Text("Use the existing PicPocket folder on your Drive for sync?") },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.confirmFolderPicker() }) {
+                        Text("Use Folder")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.cancelFolderPicker() }) {
+                        Text("Cancel")
+                    }
+                },
+            )
+        }
+        is FolderPickerState.NotFound -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.cancelFolderPicker() },
+                title = { Text("Create PicPocket Folder") },
+                text = { Text("No PicPocket folder found on Drive. Create one at your Drive root for sync?") },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.confirmFolderPicker() }) {
+                        Text("Create")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.cancelFolderPicker() }) {
+                        Text("Cancel")
+                    }
+                },
+            )
+        }
+        else -> {}
+    }
 }
 
 @Composable

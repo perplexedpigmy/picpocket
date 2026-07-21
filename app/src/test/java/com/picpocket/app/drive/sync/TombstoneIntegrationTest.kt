@@ -84,9 +84,10 @@ class TombstoneIntegrationTest {
     fun `acknowledge tombstone then clean`() = runTest {
         every { localDriveIndex.getAllKnownDeviceIds() } returns setOf("device-1", "device-2")
         every { localDriveIndex.getLocalDeviceId() } returns "device-2"
+        every { localDriveIndex.getRootFolderId() } returns ""
 
         val folderFile = com.google.api.services.drive.model.File().setId("f-1").setName("doc-1")
-        coEvery { driveFileManager.listAllFolders() } returns listOf(folderFile)
+        coEvery { driveFileManager.listAllFolders(any()) } returns listOf(folderFile)
 
         val tombstoneFile = com.google.api.services.drive.model.File().setId("tombstone-id").setName(".deleted")
         coEvery { driveFileManager.findFilesInFolder("f-1") } returns listOf(tombstoneFile)
