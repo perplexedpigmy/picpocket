@@ -120,11 +120,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
 
-    // Google Drive API
-    implementation("com.google.api-client:google-api-client-android:2.2.0")
-    implementation("com.google.http-client:google-http-client-gson:1.44.1")
+    // Google Drive Auth
     implementation("com.google.android.gms:play-services-auth:21.1.0")
-    implementation("com.google.apis:google-api-services-drive:v3-rev20230815-2.0.0") { exclude("org.apache.httpcomponents", "httpclient") }
 
     // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.0")

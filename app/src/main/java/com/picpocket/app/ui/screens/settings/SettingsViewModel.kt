@@ -3,6 +3,7 @@ package com.picpocket.app.ui.screens.settings
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import androidx.activity.result.ActivityResult
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,11 +14,14 @@ import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.PassphraseStore
 import com.picpocket.app.drive.sync.LocalDriveIndex
+import com.picpocket.app.drive.sync.RetryHandler
+import com.picpocket.app.drive.sync.SyncManager
 import com.picpocket.app.drive.sync.SyncSettings
 import com.picpocket.app.ui.theme.DarkMode
 import com.picpocket.app.ui.theme.Palette
 import com.picpocket.app.ui.theme.ThemeManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import com.picpocket.app.drive.SyncState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,12 +36,14 @@ data class SettingsUiState(
     val pageSize: PageSize = PageSize.A4,
     val qualityTier: QualityTier = QualityTier.BEST,
     val syncEnabled: Boolean = true,
+    val syncState: SyncState = SyncState.Idle,
+    val hasFolder: Boolean = false,
 )
 
 sealed interface FolderPickerState {
     data object Idle : FolderPickerState
-    data object FolderPickRequired : FolderPickerState
     data object Confirmed : FolderPickerState
+    data object FolderPickRequired : FolderPickerState
     data class Error(val message: String) : FolderPickerState
 }
 
@@ -50,6 +56,8 @@ class SettingsViewModel @Inject constructor(
     private val passphraseStore: PassphraseStore,
     private val syncSettings: SyncSettings,
     private val localDriveIndex: LocalDriveIndex,
+    private val syncManager: SyncManager,
+    private val retryHandler: RetryHandler,
 ) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences("settings", 0)
@@ -86,6 +94,16 @@ class SettingsViewModel @Inject constructor(
             )
         }
         driveAuthManager.checkExistingAuth()
+        val rootUri = localDriveIndex.getRootTreeUri()
+        val hasFolder = localDriveIndex.hasValidFolder()
+        Log.d(TAG, "init: connected=${driveAuthManager.authState.value is DriveAuthState.Connected} rootTreeUri='$rootUri' hasFolder=$hasFolder")
+        _uiState.update { it.copy(hasFolder = hasFolder) }
+        Log.d(TAG, "init: state=${driveAuthManager.authState.value}")
+        viewModelScope.launch {
+            syncManager.syncState.collect { state ->
+                _uiState.update { it.copy(syncState = state) }
+            }
+        }
     }
 
     val signInIntent: Intent
@@ -94,7 +112,7 @@ class SettingsViewModel @Inject constructor(
     fun handleSignInResult(result: ActivityResult) {
         driveAuthManager.handleSignInResult(result)
         if (driveAuthManager.authState.value is DriveAuthState.Connected) {
-            if (localDriveIndex.getRootFolderId().isNotBlank()) {
+            if (localDriveIndex.hasValidFolder()) {
                 _folderPickerState.value = FolderPickerState.Confirmed
             } else {
                 _folderPickerState.value = FolderPickerState.FolderPickRequired
@@ -103,6 +121,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun handleFolderPickerResult(uri: Uri?) {
+        Log.d(TAG, "handleFolderPickerResult: uri=$uri path=${uri?.path} segments=${uri?.pathSegments}")
         if (uri == null || uri.authority != "com.google.android.apps.docs.storage") {
             _folderPickerState.value = FolderPickerState.Error(
                 if (uri == null) "Folder selection cancelled"
@@ -110,17 +129,15 @@ class SettingsViewModel @Inject constructor(
             )
             return
         }
-        val folderId = Uri.decode(uri.lastPathSegment ?: "")
-        if (folderId.isBlank()) {
-            _folderPickerState.value = FolderPickerState.Error("Could not identify selected folder")
-            return
-        }
-        localDriveIndex.setRootFolderId(folderId)
+        val uriString = uri.toString()
+        Log.d(TAG, "handleFolderPickerResult: saving tree URI")
+        retryHandler.reset()
+        localDriveIndex.setRootTreeUri(uriString)
         _folderPickerState.value = FolderPickerState.Confirmed
-    }
-
-    fun folderPickLaunched() {
-        _folderPickerState.value = FolderPickerState.Idle
+        _uiState.update { it.copy(hasFolder = true) }
+        viewModelScope.launch {
+            syncManager.performSync()
+        }
     }
 
     fun dismissError() {
@@ -128,6 +145,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun signOut() {
+        localDriveIndex.clearFolder()
+        _uiState.update { it.copy(hasFolder = false) }
         viewModelScope.launch {
             driveAuthManager.signOut()
         }
@@ -135,19 +154,24 @@ class SettingsViewModel @Inject constructor(
 
     fun syncNow() {
         viewModelScope.launch {
-            driveAuthManager.refreshAuth()
+            retryHandler.reset()
+            syncManager.performSync()
         }
     }
 
     fun setEncryptionPassphrase(passphrase: String) {
         encryptionManager.setPassphrase(passphrase)
         passphraseStore.savePassphrase(passphrase)
+        syncManager.synthesizeReEncryptPass()
+        viewModelScope.launch { syncManager.performSync() }
         _uiState.update { it.copy() }
     }
 
     fun disableEncryption() {
         encryptionManager.clearPassphrase()
         passphraseStore.clearPassphrase()
+        syncManager.synthesizeReEncryptPass()
+        viewModelScope.launch { syncManager.performSync() }
         _uiState.update { it.copy() }
     }
 
@@ -179,5 +203,69 @@ class SettingsViewModel @Inject constructor(
     fun toggleSync(enabled: Boolean) {
         syncSettings.syncEnabled = enabled
         _uiState.update { it.copy(syncEnabled = enabled) }
+    }
+
+    fun dumpDocumentDir() {
+        val app = getApplication<Application>()
+        val docsRoot = java.io.File(app.filesDir, "documents")
+        Log.d(TAG, "=== Document Dir Dump ===")
+        Log.d(TAG, "Root: ${docsRoot.absolutePath}  exists=${docsRoot.exists()}")
+        if (!docsRoot.exists()) {
+            Log.d(TAG, "No documents directory found")
+            return
+        }
+        val dirs = docsRoot.listFiles() ?: run {
+            Log.d(TAG, "listFiles returned null")
+            return
+        }
+        Log.d(TAG, "Found ${dirs.size} document dir(s)")
+        for (docDir in dirs.sortedBy { it.name }) {
+            if (!docDir.isDirectory) continue
+            val files = docDir.listFiles() ?: emptyArray()
+            val totalSize = files.sumOf { it.length() }
+            Log.d(TAG, "  ${docDir.name}/  (${files.size} files, ${totalSize} bytes)")
+            for (f in files.sortedBy { it.name }) {
+                Log.d(TAG, "    ${f.name}  ${f.length()} bytes")
+            }
+            val metaFile = java.io.File(docDir, "metadata.json")
+            if (metaFile.exists()) {
+                try {
+                    val raw = metaFile.readText()
+                    Log.d(TAG, "    --- metadata.json content ---")
+                    for (line in raw.lines()) {
+                        Log.d(TAG, "    | $line")
+                    }
+                    Log.d(TAG, "    --- end metadata.json ---")
+                } catch (e: Exception) {
+                    Log.d(TAG, "    metadata.json read error: ${e.message}")
+                }
+            } else {
+                Log.d(TAG, "    [missing metadata.json]")
+            }
+        }
+        val indexFile = java.io.File(app.filesDir, "drive_index.json")
+        if (indexFile.exists()) {
+            try {
+                Log.d(TAG, "=== drive_index.json (${indexFile.length()} bytes) ===")
+                for (line in indexFile.readText().lines()) {
+                    Log.d(TAG, "| $line")
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "drive_index.json read error: ${e.message}")
+            }
+        } else {
+            Log.d(TAG, "No drive_index.json found")
+        }
+        val journalFile = java.io.File(app.filesDir, "sync_journal.json")
+        if (journalFile.exists()) {
+            Log.d(TAG, "sync_journal.json: ${journalFile.length()} bytes")
+        } else {
+            Log.d(TAG, "No sync_journal.json found")
+        }
+        Log.d(TAG, "=== End Dump ===")
+    }
+
+    companion object {
+        private const val TAG = "SettingsViewModel"
     }
 }

@@ -1,9 +1,8 @@
 package com.picpocket.app.drive.sync
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import com.picpocket.app.drive.EncryptionManager
-import io.mockk.coEvery
-import io.mockk.coVerify
-import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -15,69 +14,56 @@ import org.robolectric.RobolectricTestRunner
 @ExperimentalCoroutinesApi
 class DriveFileManagerTest {
 
-    private val driveAuthManager = mockk<com.picpocket.app.drive.DriveAuthManager>()
+    private val context: Context = ApplicationProvider.getApplicationContext()
     private val encryptionManager = EncryptionManager()
 
     private lateinit var manager: DriveFileManager
 
     @Before
     fun setUp() {
-        encryptionManager.setPassphrase("test")
-        manager = DriveFileManager(driveAuthManager, encryptionManager)
+        encryptionManager.setPassphrase("test-passphrase-32-chars-long!!")
+        manager = DriveFileManager(context, encryptionManager)
     }
 
     @Test
-    fun `createOrGetFolder returns null when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.createOrGetFolder("test-doc")
-        assert(result == null)
-    }
-
-    @Test
-    fun `listAllFolders returns empty when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.listAllFolders()
+    fun `listDocFolders returns empty for invalid treeUri`() = runTest {
+        val result = manager.listDocFolders("content://invalid-tree-uri/")
         assert(result.isEmpty())
     }
 
     @Test
-    fun `findFilesInFolder returns empty when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.findFilesInFolder("folder-id")
+    fun `listFileNames returns empty for invalid treeUri`() = runTest {
+        val result = manager.listFileNames("content://invalid-tree-uri/", "doc-123")
         assert(result.isEmpty())
     }
 
     @Test
-    fun `uploadFile returns null when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.uploadFile("folder-id", "test.jpg", byteArrayOf(1, 2, 3))
+    fun `readFile returns null for invalid treeUri`() = runTest {
+        val result = manager.readFile("content://invalid-tree-uri/", "doc-123", "page.jpg")
         assert(result == null)
     }
 
     @Test
-    fun `downloadFile returns null when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.downloadFile("file-id")
-        assert(result == null)
+    fun `writeFile returns false for invalid treeUri`() = runTest {
+        val result = manager.writeFile("content://invalid-tree-uri/", "doc-123", "page.jpg", byteArrayOf(1, 2, 3))
+        assert(result == false)
     }
 
     @Test
-    fun `deleteFile does not throw when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        manager.deleteFile("file-id")
+    fun `deleteFileByName returns false for invalid treeUri`() = runTest {
+        val result = manager.deleteFileByName("content://invalid-tree-uri/", "doc-123", "page.jpg")
+        assert(result == false)
     }
 
     @Test
-    fun `findFolder returns null when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.findFolder("test-doc")
-        assert(result == null)
+    fun `createDocFolder returns false for invalid treeUri`() = runTest {
+        val result = manager.createDocFolder("content://invalid-tree-uri/", "doc-123")
+        assert(result == false)
     }
 
     @Test
-    fun `createFolder returns null when not authenticated`() = runTest {
-        coEvery { driveAuthManager.driveService } returns null
-        val result = manager.createFolder("test-doc")
+    fun `readMetadataJson returns null for invalid treeUri`() = runTest {
+        val result = manager.readMetadataJson("content://invalid-tree-uri/", "doc-123")
         assert(result == null)
     }
 }

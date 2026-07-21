@@ -23,12 +23,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.DevicesOther
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +61,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.picpocket.app.domain.export.PageSize
 import com.picpocket.app.domain.scan.QualityTier
 import com.picpocket.app.drive.DriveAuthState
+import com.picpocket.app.drive.SyncState
 import com.picpocket.app.ui.theme.DarkMode
 import com.picpocket.app.ui.theme.Palette
 
@@ -89,13 +92,6 @@ fun SettingsScreen(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
         viewModel.handleFolderPickerResult(uri)
-    }
-
-    if (folderPickerState is FolderPickerState.FolderPickRequired) {
-        LaunchedEffect(Unit) {
-            folderPickerLauncher.launch(null)
-            viewModel.folderPickLaunched()
-        }
     }
 
     Scaffold(
@@ -255,14 +251,40 @@ fun SettingsScreen(
                     when (driveState) {
                         is DriveAuthState.Connected -> {
                             Row {
-                                Button(onClick = { viewModel.syncNow() }) {
-                                    Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Button(
+                                    onClick = { viewModel.syncNow() },
+                                    enabled = state.syncState !is SyncState.Syncing,
+                                ) {
+                                    if (state.syncState is SyncState.Syncing) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                        )
+                                    } else {
+                                        Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    }
                                     Spacer(Modifier.width(4.dp))
                                     Text("Sync Now")
                                 }
                                 Spacer(Modifier.width(8.dp))
                                 OutlinedButton(onClick = { viewModel.signOut() }) {
                                     Text("Disconnect")
+                                }
+                            }
+                            if (state.syncState is SyncState.Error) {
+                                Text(
+                                    text = (state.syncState as SyncState.Error).message,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                            if (!state.hasFolder) {
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedButton(onClick = { folderPickerLauncher.launch(null) }) {
+                                    Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Select Drive folder")
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
@@ -548,6 +570,10 @@ fun SettingsScreen(
                         "PicPocket v1.0.0",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = { viewModel.dumpDocumentDir() }) {
+                        Text("Debug: dump documents", style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }

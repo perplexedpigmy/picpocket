@@ -15,6 +15,7 @@ data class DriveIndex(
     val documents: MutableMap<String, DocumentDriveInfo> = mutableMapOf(),
     var localDeviceId: String = "",
     var rootFolderId: String = "",
+    var rootTreeUri: String = "",
 )
 
 @Serializable
@@ -76,10 +77,29 @@ class LocalDriveIndex @Inject constructor(
 
     fun getAllKnownDeviceIds(): Set<String> = index.devices.keys
 
+    fun getAllTrackedDocumentIds(): Set<String> = index.documents.keys
+
     fun getRootFolderId(): String = index.rootFolderId
 
     fun setRootFolderId(id: String) {
         index.rootFolderId = id
+        save()
+    }
+
+    fun getRootTreeUri(): String = index.rootTreeUri
+
+    fun setRootTreeUri(uri: String) {
+        index.rootTreeUri = uri
+        save()
+    }
+
+    fun hasValidFolder(): Boolean {
+        return index.rootTreeUri.isNotBlank()
+    }
+
+    fun clearFolder() {
+        index.rootFolderId = ""
+        index.rootTreeUri = ""
         save()
     }
 

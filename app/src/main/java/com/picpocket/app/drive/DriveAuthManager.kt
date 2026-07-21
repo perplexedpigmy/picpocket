@@ -8,11 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
-import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
-import com.google.api.client.http.javanet.NetHttpTransport
-import com.google.api.client.json.gson.GsonFactory
-import com.google.api.services.drive.Drive
-import com.google.api.services.drive.DriveScopes
+
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,29 +25,12 @@ class DriveAuthManager @Inject constructor(
     private val signInClient: GoogleSignInClient by lazy {
         val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(com.google.android.gms.common.api.Scope(DriveScopes.DRIVE_FILE))
             .build()
         GoogleSignIn.getClient(context, options)
     }
 
     val signInIntent: Intent
         get() = signInClient.signInIntent
-
-    val driveService: Drive?
-        get() {
-            val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
-            val credential = GoogleAccountCredential.usingOAuth2(
-                context, listOf(DriveScopes.DRIVE_FILE),
-            )
-            credential.selectedAccount = account.account
-            return Drive.Builder(
-                NetHttpTransport(),
-                GsonFactory.getDefaultInstance(),
-                credential,
-            )
-                .setApplicationName("PicPocket")
-                .build()
-        }
 
     fun handleSignInResult(result: ActivityResult) {
         try {

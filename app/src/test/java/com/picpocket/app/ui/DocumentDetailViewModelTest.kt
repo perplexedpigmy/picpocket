@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import com.picpocket.app.data.FakeDocumentRepository
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.drive.sync.SyncJournal
+import io.mockk.mockk
 import com.picpocket.app.domain.ocr.FakeOcrEngine
 import com.picpocket.app.domain.ocr.OcrManager
 import com.picpocket.app.domain.export.FakePdfGenerator
@@ -32,6 +34,7 @@ class DocumentDetailViewModelTest {
 
     private lateinit var repo: FakeDocumentRepository
     private lateinit var viewModel: DocumentDetailViewModel
+    private val syncJournal = mockk<SyncJournal>(relaxed = true)
     private var documentId: String = ""
 
     @Before
@@ -41,7 +44,7 @@ class DocumentDetailViewModelTest {
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         val app = RuntimeEnvironment.getApplication() as Application
-        val store = DocumentStore(app)
+        val store = DocumentStore(app, syncJournal)
         viewModel = DocumentDetailViewModel(
             app,
             repo,

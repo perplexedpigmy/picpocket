@@ -49,8 +49,7 @@ class ConflictIntegrationTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = doc2,
                 isDeleted = false,
             ),
@@ -78,8 +77,7 @@ class ConflictIntegrationTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = doc2,
                 isDeleted = false,
             ),
@@ -107,8 +105,7 @@ class ConflictIntegrationTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = doc,
                 isDeleted = false,
             ),

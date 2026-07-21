@@ -1,106 +1,73 @@
 package com.picpocket.app.drive.sync
 
-import com.picpocket.app.drive.DriveAuthManager
+import android.content.Context
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.drive.EncryptionManager
-import com.google.api.client.http.ByteArrayContent
-import com.google.api.services.drive.Drive
-import com.google.api.services.drive.model.File
-import java.io.ByteArrayOutputStream
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class DriveFileManager @Inject constructor(
-    private val driveAuthManager: DriveAuthManager,
+    @ApplicationContext private val context: Context,
     private val encryptionManager: EncryptionManager,
 ) {
-    private val service: Drive?
-        get() = driveAuthManager.driveService
 
-    suspend fun createFolder(name: String, parentFolderId: String? = null): String? {
-        val drive = service ?: return null
-        val metadata = File().setName(name).setMimeType(FOLDER_MIME)
-        if (parentFolderId != null) {
-            metadata.parents = listOf(parentFolderId)
-        }
-        val folder = drive.files().create(metadata)
-            .setFields("id")
-            .execute()
-        return folder.id
+    suspend fun listDocFolders(treeUri: String): List<String> = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyList()
+        root.listFiles()
+            .filter { it.isDirectory }
+            .mapNotNull { it.name }
     }
 
-    suspend fun findFolder(name: String, parentFolderId: String? = null): String? {
-        val drive = service ?: return null
-        val query = buildString {
-            append("name = '$name' and mimeType = '$FOLDER_MIME' and trashed = false")
-            if (parentFolderId != null) {
-                append(" and '$parentFolderId' in parents")
-            }
-        }
-        val result = drive.files().list()
-            .setQ(query)
-            .setFields("files(id)")
-            .execute()
-        return result.files.firstOrNull()?.id
+    suspend fun listFileNames(treeUri: String, docId: String): List<String> = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyList()
+        val folder = root.findFile(docId) ?: return@withContext emptyList()
+        folder.listFiles()
+            .filter { !it.isDirectory }
+            .mapNotNull { it.name }
     }
 
-    suspend fun createOrGetFolder(name: String, parentFolderId: String? = null): String? {
-        return findFolder(name, parentFolderId) ?: createFolder(name, parentFolderId)
+    suspend fun readFile(treeUri: String, docId: String, fileName: String): ByteArray? = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext null
+        val folder = root.findFile(docId) ?: return@withContext null
+        val file = folder.findFile(fileName) ?: return@withContext null
+        val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() } ?: return@withContext null
+        encryptionManager.decrypt(encrypted)
     }
 
-    suspend fun uploadFile(parentFolderId: String, fileName: String, data: ByteArray, mimeType: String = "application/octet-stream"): String? {
-        val drive = service ?: return null
+    suspend fun writeFile(treeUri: String, docId: String, fileName: String, data: ByteArray, mimeType: String = "application/octet-stream"): Boolean = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
         val encrypted = encryptionManager.encrypt(data)
-        val finalName = encryptionManager.encryptFilename(fileName)
-        val metadata = File()
-            .setName(finalName)
-            .setParents(listOf(parentFolderId))
-        val content = ByteArrayContent(mimeType, encrypted)
-        val file = drive.files().create(metadata, content)
-            .setFields("id")
-            .execute()
-        return file.id
-    }
-
-    suspend fun downloadFile(fileId: String): ByteArray? {
-        val drive = service ?: return null
-        val stream = ByteArrayOutputStream()
-        drive.files().get(fileId).executeMediaAndDownloadTo(stream)
-        val encrypted = stream.toByteArray()
-        return encryptionManager.decrypt(encrypted)
-    }
-
-    suspend fun findFilesInFolder(folderId: String): List<File> {
-        val drive = service ?: return emptyList()
-        val query = "'$folderId' in parents and trashed = false"
-        val result = drive.files().list()
-            .setQ(query)
-            .setFields("files(id, name, mimeType, size)")
-            .execute()
-        return result.files
-    }
-
-    suspend fun deleteFile(fileId: String) {
-        val drive = service ?: return
-        drive.files().delete(fileId).execute()
-    }
-
-    suspend fun listAllFolders(rootFolderId: String? = null): List<File> {
-        val drive = service ?: return emptyList()
-        val query = buildString {
-            append("mimeType = '$FOLDER_MIME' and trashed = false")
-            if (rootFolderId != null) {
-                append(" and '$rootFolderId' in parents")
-            }
+        val folder = root.findFile(docId)
+        val docFolder = folder ?: root.createDirectory(docId) ?: return@withContext false
+        val existing = docFolder.findFile(fileName)
+        if (existing != null) {
+            existing.delete()
         }
-        val result = drive.files().list()
-            .setQ(query)
-            .setFields("files(id, name)")
-            .execute()
-        return result.files
+        val newFile = docFolder.createFile(mimeType, fileName) ?: return@withContext false
+        context.contentResolver.openOutputStream(newFile.uri)?.use { it.write(encrypted) } ?: return@withContext false
+        true
     }
 
-    companion object {
-        private const val FOLDER_MIME = "application/vnd.google-apps.folder"
+    suspend fun deleteFileByName(treeUri: String, docId: String, fileName: String): Boolean = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
+        val folder = root.findFile(docId) ?: return@withContext false
+        val file = folder.findFile(fileName) ?: return@withContext false
+        file.delete()
+    }
+
+    suspend fun createDocFolder(treeUri: String, docId: String): Boolean = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
+        val existing = root.findFile(docId)
+        if (existing != null && existing.isDirectory) return@withContext true
+        root.createDirectory(docId) != null
+    }
+
+    suspend fun readMetadataJson(treeUri: String, docId: String): ByteArray? = withContext(Dispatchers.IO) {
+        readFile(treeUri, docId, "metadata.json")
     }
 }

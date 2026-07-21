@@ -26,6 +26,10 @@ class RetryHandler @Inject constructor(
         consecutiveFailures++
     }
 
+    fun reset() {
+        consecutiveFailures = 0
+    }
+
     suspend fun waitBeforeRetry() {
         val count = consecutiveFailures
         if (count == 0) return

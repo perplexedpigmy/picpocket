@@ -1,7 +1,8 @@
 package com.picpocket.app.data.store
 
 import android.app.Application
-import com.picpocket.app.data.model.Page
+import com.picpocket.app.drive.sync.JournalEntry
+import com.picpocket.app.drive.sync.SyncJournal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -42,6 +43,7 @@ data class StoredPage(
 @Singleton
 class DocumentStore @Inject constructor(
     private val app: Application,
+    private val syncJournal: SyncJournal,
 ) {
     private val json = Json {
         prettyPrint = true
@@ -139,16 +141,20 @@ class DocumentStore @Inject constructor(
                 createdAt = createdAt,
             )
         )
-        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis(), pages = doc.pages, syncDirty = true))
+        val newDoc = doc.copy(updatedAt = System.currentTimeMillis(), pages = doc.pages)
+        writeMetadata(documentId, newDoc)
+        syncJournal.append(JournalEntry.AddPage(documentId, pageNumber, filename, fileSizeBytes))
+        Result.success(Unit)
     }
 
     suspend fun removePage(documentId: String, pageNumber: Int): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         doc.pages.removeAll { it.pageNumber == pageNumber }
         renumberPages(doc)
-        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis(), syncDirty = true))
+        writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis()))
         val pageFile = pageFile(documentId, filenameForPage(pageNumber))
         pageFile.delete()
+        syncJournal.append(JournalEntry.RemovePage(documentId, pageNumber))
         Result.success(Unit)
     }
 
@@ -159,7 +165,9 @@ class DocumentStore @Inject constructor(
         val updated = reordered.mapIndexed { index, page ->
             page.copy(pageNumber = index + 1)
         }
-        writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis(), syncDirty = true))
+        writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
+        syncJournal.append(JournalEntry.ReorderPages(documentId, orderedPageNumbers))
+        Result.success(Unit)
     }
 
     suspend fun updatePageOcrText(documentId: String, pageNumber: Int, ocrText: String): Result<Unit> = withContext(Dispatchers.IO) {
@@ -167,12 +175,16 @@ class DocumentStore @Inject constructor(
         val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
         if (idx < 0) return@withContext Result.failure(Exception("Page $pageNumber not found"))
         doc.pages[idx] = doc.pages[idx].copy(ocrText = ocrText)
-        writeMetadata(documentId, doc.copy(pages = doc.pages, syncDirty = true))
+        writeMetadata(documentId, doc.copy(pages = doc.pages))
+        syncJournal.append(JournalEntry.UpdatePageOcr(documentId, pageNumber, ocrText))
+        Result.success(Unit)
     }
 
     suspend fun updateDocumentName(documentId: String, name: String): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
-        writeMetadata(documentId, doc.copy(name = name, updatedAt = System.currentTimeMillis(), syncDirty = true))
+        writeMetadata(documentId, doc.copy(name = name, updatedAt = System.currentTimeMillis()))
+        syncJournal.append(JournalEntry.UpdateDocumentName(documentId, name))
+        Result.success(Unit)
     }
 
     suspend fun nextPageNumber(documentId: String): Result<Int> = withContext(Dispatchers.IO) {
@@ -196,8 +208,9 @@ class DocumentStore @Inject constructor(
             pages = doc.pages,
             ocrComplete = false,
             updatedAt = System.currentTimeMillis(),
-            syncDirty = true,
         ))
+        syncJournal.append(JournalEntry.ReplacePageImage(documentId, pageNumber, fileSizeBytes))
+        Result.success(Unit)
     }
 
     suspend fun totalFileSize(documentId: String): Result<Long> = withContext(Dispatchers.IO) {
@@ -224,8 +237,9 @@ class DocumentStore @Inject constructor(
         val updated = kept.mapIndexed { index, page ->
             page.copy(pageNumber = index + 1)
         }
-        val writeResult = writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis(), syncDirty = true))
+        val writeResult = writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
         writeResult.getOrElse { return@withContext Result.failure(it) }
+        syncJournal.append(JournalEntry.ReplacePages(documentId, keptFilenames))
         Result.success(removed.map { it.filename })
     }
 

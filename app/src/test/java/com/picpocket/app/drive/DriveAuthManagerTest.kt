@@ -32,8 +32,4 @@ class DriveAuthManagerTest {
         assert(manager.authState.value is DriveAuthState.Disconnected)
     }
 
-    @Test
-    fun `driveService is null without signed in account`() {
-        assert(manager.driveService == null)
-    }
 }

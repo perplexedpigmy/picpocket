@@ -36,6 +36,7 @@ class SyncSmokeTest {
     private val retryHandler = mockk<RetryHandler>()
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<android.content.Context>()
+    private val journal = mockk<SyncJournal>(relaxed = true)
 
     private lateinit var syncManager: SyncManager
 
@@ -45,7 +46,12 @@ class SyncSmokeTest {
         every { driveConnectivityChecker.isNetworkAvailable() } returns true
         every { syncSettings.syncEnabled } returns true
         every { localDriveIndex.getLocalDeviceId() } returns "device-1"
+        every { localDriveIndex.getRootFolderId() } returns ""
         every { defaultSyncScheduler.setSyncCallback(any()) } returns Unit
+        every { journal.entriesFromCheckpoint() } returns emptyList()
+        every { journal.isEmpty() } returns true
+        every { journal.advanceCheckpoint() } returns Unit
+        every { journal.truncate() } returns Unit
         coEvery { retryHandler.waitBeforeRetry() } returns Unit
         coEvery { retryHandler.onSuccess() } returns Unit
         coEvery { retryHandler.onFailure() } returns Unit
@@ -64,6 +70,7 @@ class SyncSmokeTest {
             deviceRegistry,
             retryHandler,
             syncSettings,
+            journal,
             context,
         )
     }

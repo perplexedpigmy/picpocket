@@ -47,8 +47,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = baseDoc.copy(syncVersion = 1, syncTimestamp = 100L),
                 isDeleted = false,
             ),
@@ -64,8 +63,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = baseDoc.copy(syncVersion = 3, syncTimestamp = 200L),
                 isDeleted = false,
             ),
@@ -81,8 +79,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = baseDoc.copy(syncVersion = 3, syncTimestamp = 150L),
                 isDeleted = false,
             ),
@@ -98,8 +95,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = null,
                 isDeleted = true,
             ),
@@ -115,8 +111,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = null,
                 isDeleted = false,
             ),
@@ -132,8 +127,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = baseDoc.copy(syncVersion = 3, syncTimestamp = 150L),
                 isDeleted = false,
             ),
@@ -154,8 +148,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = remoteMeta,
                 isDeleted = false,
             ),
@@ -175,8 +168,7 @@ class ConflictResolverTest {
         val remote = listOf(
             DownloadEngine.RemoteDocument(
                 docId = "doc-1",
-                folderId = "f-1",
-                files = emptyMap(),
+                fileNames = emptyList(),
                 metadata = baseDoc.copy(syncVersion = 3, syncTimestamp = 150L),
                 isDeleted = false,
             ),

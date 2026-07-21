@@ -40,6 +40,7 @@ class SyncManagerTest {
     private val retryHandler = mockk<RetryHandler>()
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<Context>()
+    private val journal = mockk<SyncJournal>(relaxed = true)
 
     private lateinit var syncManager: SyncManager
 
@@ -49,7 +50,13 @@ class SyncManagerTest {
         every { driveConnectivityChecker.isNetworkAvailable() } returns true
         every { syncSettings.syncEnabled } returns true
         every { localDriveIndex.getLocalDeviceId() } returns "device-1"
+        every { localDriveIndex.getRootFolderId() } returns ""
+        every { localDriveIndex.getRootTreeUri() } returns ""
         every { defaultSyncScheduler.setSyncCallback(any()) } returns Unit
+        every { journal.entriesFromCheckpoint() } returns emptyList()
+        every { journal.isEmpty() } returns true
+        every { journal.advanceCheckpoint() } returns Unit
+        every { journal.truncate() } returns Unit
         coEvery { retryHandler.waitBeforeRetry() } returns Unit
         coEvery { retryHandler.onSuccess() } returns Unit
         coEvery { retryHandler.onFailure() } returns Unit
@@ -68,6 +75,7 @@ class SyncManagerTest {
             deviceRegistry,
             retryHandler,
             syncSettings,
+            journal,
             context,
         )
     }
@@ -136,15 +144,14 @@ class SyncManagerTest {
         coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
         val remote = DownloadEngine.RemoteDocument(
             docId = "remote-1",
-            folderId = "folder-1",
-            files = mapOf("page_001.jpg" to "file-1"),
+            fileNames = listOf("page_001.jpg"),
             metadata = StoredDocument(id = "remote-1", name = "Remote", createdAt = 0L, updatedAt = 0L),
             isDeleted = false,
         )
         coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
         coEvery { documentStore.writeMetadata(any(), any()) } returns Result.success(Unit)
         coEvery { documentStore.pageFile(any(), any()) } returns java.io.File.createTempFile("test", ".jpg")
-        coEvery { downloadEngine.downloadFile(any()) } returns byteArrayOf(1, 2, 3)
+        coEvery { downloadEngine.downloadFile(any(), any(), any()) } returns byteArrayOf(1, 2, 3)
 
         syncManager.performSync()
 

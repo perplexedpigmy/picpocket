@@ -2,7 +2,6 @@ package com.picpocket.app.drive.sync
 
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
-import com.google.api.services.drive.model.File
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -17,23 +16,21 @@ class DownloadEngine @Inject constructor(
 
     data class RemoteDocument(
         val docId: String,
-        val folderId: String,
-        val files: Map<String, String>,
+        val fileNames: List<String>,
         val metadata: StoredDocument?,
         val isDeleted: Boolean,
     )
 
     suspend fun listRemoteDocuments(): List<RemoteDocument> {
-        val folders = driveFileManager.listAllFolders(localDriveIndex.getRootFolderId().ifBlank { null })
-        return folders.mapNotNull { folder: File ->
-            val docId = folder.name
-            val files = driveFileManager.findFilesInFolder(folder.id)
-            val fileMap: Map<String, String> = files.associate { file: File -> file.name to file.id }
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return emptyList()
 
-            val hasDeleted = fileMap.containsKey(".deleted")
-            val metadataId = fileMap["metadata.json"]
-            val metadata = if (metadataId != null && !hasDeleted) {
-                val data = driveFileManager.downloadFile(metadataId)
+        val docIds = driveFileManager.listDocFolders(treeUri)
+        return docIds.mapNotNull { docId ->
+            val fileNames = driveFileManager.listFileNames(treeUri, docId)
+            val hasDeleted = ".deleted" in fileNames
+            val metadata = if ("metadata.json" in fileNames && !hasDeleted) {
+                val data = driveFileManager.readMetadataJson(treeUri, docId)
                 if (data != null) {
                     try {
                         json.decodeFromString<StoredDocument>(String(data, Charsets.UTF_8))
@@ -45,15 +42,18 @@ class DownloadEngine @Inject constructor(
 
             RemoteDocument(
                 docId = docId,
-                folderId = folder.id,
-                files = fileMap.filter { (key, _) -> key != ".deleted" && key != "metadata.json" },
+                fileNames = fileNames.filter { it != ".deleted" && it != "metadata.json" },
                 metadata = metadata,
                 isDeleted = hasDeleted,
             )
         }
     }
 
-    suspend fun downloadFile(fileId: String): ByteArray? {
-        return driveFileManager.downloadFile(fileId)
+    suspend fun downloadFile(treeUri: String, docId: String, fileName: String): ByteArray? {
+        return driveFileManager.readFile(treeUri, docId, fileName)
+    }
+
+    suspend fun downloadTombstone(treeUri: String, docId: String): ByteArray? {
+        return driveFileManager.readFile(treeUri, docId, ".deleted")
     }
 }

@@ -1,8 +1,11 @@
 package com.picpocket.app.drive.sync
 
+import android.content.Context
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
-import com.google.api.services.drive.model.File
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -23,6 +26,7 @@ class DeviceRegistry @Inject constructor(
     private val driveFileManager: DriveFileManager,
     private val documentStore: DocumentStore,
     private val localDriveIndex: LocalDriveIndex,
+    @ApplicationContext private val context: Context,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val orphans = mutableListOf<OrphanedDocument>()
@@ -30,6 +34,8 @@ class DeviceRegistry @Inject constructor(
     fun getOrphans(): List<OrphanedDocument> = orphans.filter { !it.acknowledged }
 
     suspend fun detectOrphans(localDocs: List<StoredDocument>, remoteDocs: List<DownloadEngine.RemoteDocument>) {
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return
         orphans.clear()
         val devices = localDriveIndex.getDevices()
 
@@ -38,9 +44,8 @@ class DeviceRegistry @Inject constructor(
             val localDoc = localDocs.find { it.id == remote.docId }
             if (localDoc == null) continue
 
-            val tombstoneId = remote.files[".deleted"]
-            val byDevice = if (tombstoneId != null) {
-                val data = driveFileManager.downloadFile(tombstoneId)
+            val byDevice = if (".deleted" in remote.fileNames) {
+                val data = driveFileManager.readFile(treeUri, remote.docId, ".deleted")
                 if (data != null) {
                     try {
                         json.decodeFromString<TombstoneData>(String(data, Charsets.UTF_8))
@@ -67,9 +72,9 @@ class DeviceRegistry @Inject constructor(
     }
 
     suspend fun keepOrphan(docId: String) {
-        val info = localDriveIndex.getDocumentInfo(docId)
-        if (info.folderId.isNotBlank()) {
-            driveFileManager.deleteFile("${info.folderId}/.deleted")
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isNotBlank()) {
+            driveFileManager.deleteFileByName(treeUri, docId, ".deleted")
         }
         val doc = documentStore.readMetadata(docId).getOrNull() ?: return
         val updated = doc.copy(syncDirty = true, syncVersion = 0, syncTimestamp = System.currentTimeMillis())
@@ -92,11 +97,9 @@ class DeviceRegistry @Inject constructor(
     }
 
     private suspend fun acknowledgeTombstone(docId: String) {
-        val info = localDriveIndex.getDocumentInfo(docId)
-        if (info.folderId.isBlank()) return
-        val files = driveFileManager.findFilesInFolder(info.folderId)
-        val tombstoneFile = files.find { it.name == ".deleted" } ?: return
-        val data = driveFileManager.downloadFile(tombstoneFile.id) ?: return
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return
+        val data = driveFileManager.readFile(treeUri, docId, ".deleted") ?: return
         val tombstone = try {
             json.decodeFromString<TombstoneData>(String(data, Charsets.UTF_8))
         } catch (_: Exception) {
@@ -105,23 +108,25 @@ class DeviceRegistry @Inject constructor(
         val deviceId = localDriveIndex.getLocalDeviceId()
         if (deviceId !in tombstone.acknowledgedBy) {
             val updated = tombstone.copy(acknowledgedBy = tombstone.acknowledgedBy + deviceId)
-            driveFileManager.uploadFile(
-                info.folderId,
-                ".deleted",
+            driveFileManager.writeFile(
+                treeUri, docId, ".deleted",
                 json.encodeToString(updated).toByteArray(Charsets.UTF_8),
             )
         }
     }
 
     suspend fun cleanDrive() {
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return
         val allDeviceIds = localDriveIndex.getAllKnownDeviceIds()
         if (allDeviceIds.isEmpty()) return
-        val allFolders = driveFileManager.listAllFolders(localDriveIndex.getRootFolderId().ifBlank { null })
 
-        for (folder in allFolders) {
-            val files = driveFileManager.findFilesInFolder(folder.id)
-            val tombstoneFile = files.find { it.name == ".deleted" } ?: continue
-            val data = driveFileManager.downloadFile(tombstoneFile.id) ?: continue
+        val docIds = driveFileManager.listDocFolders(treeUri)
+
+        for (docId in docIds) {
+            val fileNames = driveFileManager.listFileNames(treeUri, docId)
+            if (".deleted" !in fileNames) continue
+            val data = driveFileManager.readFile(treeUri, docId, ".deleted") ?: continue
             val tombstone = try {
                 json.decodeFromString<TombstoneData>(String(data, Charsets.UTF_8))
             } catch (_: Exception) {
@@ -129,10 +134,11 @@ class DeviceRegistry @Inject constructor(
             }
 
             if (allDeviceIds.all { it in tombstone.acknowledgedBy }) {
-                driveFileManager.deleteFile(tombstoneFile.id)
-                val remainingFiles = driveFileManager.findFilesInFolder(folder.id)
-                if (remainingFiles.isEmpty()) {
-                    driveFileManager.deleteFile(folder.id)
+                driveFileManager.deleteFileByName(treeUri, docId, ".deleted")
+                val remaining = driveFileManager.listFileNames(treeUri, docId)
+                if (remaining.isEmpty()) {
+                    val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+                    root?.findFile(docId)?.delete()
                 }
             }
         }

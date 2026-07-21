@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.drive.sync.CheckpointStore
+import com.picpocket.app.drive.sync.SyncJournal
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -21,7 +23,9 @@ class DocumentStoreTest {
 
     @Before
     fun setUp() {
-        store = DocumentStore(app)
+        val checkpointStore = CheckpointStore(app)
+        val syncJournal = SyncJournal(app, checkpointStore)
+        store = DocumentStore(app, syncJournal)
     }
 
     @Test
