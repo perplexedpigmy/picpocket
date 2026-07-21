@@ -8,11 +8,11 @@ plugins {
 }
 
 android {
-    namespace = "com.docscanner"
+    namespace = "com.picpocket.app"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.docscanner"
+        applicationId = "com.picpocket.app"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

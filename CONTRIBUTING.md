@@ -1,10 +1,10 @@
 # Contributing
 
-Thanks for your interest in DocScanner! Here's how to get involved.
+Thanks for your interest in PicPocket! Here's how to get involved.
 
 ## Bug Reports
 
-Open a [GitHub issue](https://github.com/perplexedpigmy/docscanner/issues/new) with:
+Open a [GitHub issue](https://github.com/perplexedpigmy/picpocket/issues/new) with:
 
 - Device model and Android version
 - Steps to reproduce
@@ -13,7 +13,7 @@ Open a [GitHub issue](https://github.com/perplexedpigmy/docscanner/issues/new) w
 
 ## Feature Requests
 
-Open a [GitHub issue](https://github.com/perplexedpigmy/docscanner/issues/new) with:
+Open a [GitHub issue](https://github.com/perplexedpigmy/picpocket/issues/new) with:
 
 - What the feature does and why it's useful
 - Any relevant examples or references

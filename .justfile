@@ -1,7 +1,7 @@
-# Justfile for DocScanner Android Project
+# Justfile for PicPocket Android Project
 # Provides convenient tasks for common operations
 
-APP_NAME := "com.docscanner"
+APP_NAME := "com.picpocket.app"
 APK_PATH := "app/build/outputs/apk/debug/app-debug.apk"
 
 default: help

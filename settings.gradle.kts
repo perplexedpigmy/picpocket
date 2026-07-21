@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "DocScanner"
+rootProject.name = "PicPocket"
 include(":app")

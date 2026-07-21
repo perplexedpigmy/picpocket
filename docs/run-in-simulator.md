@@ -1,4 +1,4 @@
-# Run DocScanner in an Android Emulator
+# Run PicPocket in an Android Emulator
 
 ## Prerequisites
 
@@ -78,7 +78,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 On first build, `./gradlew assembleDebug` will automatically install if an emulator is running. Otherwise `adb install` does it.
 
-The app icon will appear in the emulator's app drawer under "DocScanner".
+The app icon will appear in the emulator's app drawer under "PicPocket".
 
 ## Step 5 — Run instrumentation tests
 

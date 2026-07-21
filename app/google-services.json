@@ -9,7 +9,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:000000000000:android:abcdef1234567890",
         "android_client_info": {
-          "package_name": "com.docscanner"
+          "package_name": "com.picpocket.app"
         }
       },
       "oauth_client": [

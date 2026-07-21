@@ -1,4 +1,4 @@
-# Install DocScanner on a Physical Android Device
+# Install PicPocket on a Physical Android Device
 
 ## Prerequisites
 
@@ -61,8 +61,8 @@ The `-r` flag reinstalls if an existing version is found (useful for updates).
 To verify the install:
 
 ```bash
-adb shell pm list packages | grep docscanner
-# Output: package:com.docscanner
+adb shell pm list packages | grep picpocket
+# Output: package:com.picpocket.app
 ```
 
 ---
@@ -74,8 +74,8 @@ Debug APKs are signed with a debug keystore. For a distributable APK, generate a
 ### 4a. Create a keystore (one time)
 
 ```bash
-keytool -genkey -v -keystore ~/docscanner-keystore.jks \
-  -alias docscanner -keyalg RSA -keysize 2048 -validity 10000
+keytool -genkey -v -keystore ~/picpocket-keystore.jks \
+  -alias picpocket -keyalg RSA -keysize 2048 -validity 10000
 ```
 
 ### 4b. Configure signing in `app/build.gradle.kts`
@@ -85,9 +85,9 @@ Add inside the `android { ... }` block:
 ```kotlin
 signingConfigs {
     create("release") {
-        storeFile = file(System.getenv("KEYSTORE_PATH") ?: "/home/zun/docscanner-keystore.jks")
+        storeFile = file(System.getenv("KEYSTORE_PATH") ?: "/home/zun/picpocket-keystore.jks")
         storePassword = System.getenv("KEYSTORE_PASSWORD")
-        keyAlias = System.getenv("KEY_ALIAS") ?: "docscanner"
+        keyAlias = System.getenv("KEY_ALIAS") ?: "picpocket"
         keyPassword = System.getenv("KEY_PASSWORD")
     }
 }
@@ -153,7 +153,7 @@ The `-r` flag preserves the app's data.
 ### Uninstalling
 
 ```bash
-adb uninstall com.docscanner
+adb uninstall com.picpocket.app
 ```
 
-Or on the device: Settings → Apps → DocScanner → Uninstall.
+Or on the device: Settings → Apps → PicPocket → Uninstall.

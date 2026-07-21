@@ -1,6 +1,6 @@
-<img src=".github/images/icon.svg" width="72" height="72" align="left" alt="DocScanner icon">
+<img src=".github/images/icon.svg" width="72" height="72" align="left" alt="PicPocket icon">
 
-# DocScanner
+# PicPocket
 
 [![Android](https://img.shields.io/badge/Android-26%2B-3DDC84?logo=android)](https://developer.android.com/about/versions/oreo)
 [![Kotlin](https://img.shields.io/badge/Kotlin-1.9.22-7F52FF?logo=kotlin)](https://kotlinlang.org)
@@ -34,8 +34,8 @@ A document scanner for Android that auto-detects document bounds, captures multi
 
 ```bash
 # Clone
-git clone https://github.com/zunftw/docscanner.git
-cd docscanner
+git clone https://github.com/zunftw/picpocket.git
+cd picpocket
 
 # Create local.properties
 echo "sdk.dir=\$HOME/Android/Sdk" > local.properties
@@ -61,7 +61,7 @@ The project uses the standard Android Gradle plugin. No special setup is require
 app/
 ├── src/
 │   ├── main/
-│   │   ├── java/com/docscanner/
+│   │   ├── java/com/picpocket/app/
 │   │   │   ├── data/
 │   │   │   │   ├── local/       — Room database, DAOs, entities (documents, pages, tags)
 │   │   │   │   └── repository/  — DocumentRepository implementation
@@ -98,7 +98,7 @@ settings.gradle.kts              — Project-level Gradle config
 | OCR | ML Kit Text Recognition v2 |
 | PDF | Android `PdfDocument` API |
 | Navigation | Jetpack Navigation Compose |
-| Testing | JUnit 5, Robolectric, Turbine, MockK |
+| Testing | JUnit 4, Robolectric, Turbine, MockK |
 
 ## Support
 

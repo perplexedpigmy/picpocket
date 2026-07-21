@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_PACKAGE="com.docscanner"
+APP_PACKAGE="com.picpocket.app"
 APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
 AVD_NAME="${1:-testPixel7}"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/.local/android-sdk}"
@@ -22,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "=== DocScanner Smoke Tests ==="
+echo "=== PicPocket Smoke Tests ==="
 echo ""
 
 # ── 1. Build ──────────────────────────────────────────────────
@@ -259,4 +259,4 @@ adb shell dumpsys activity activities 2>/dev/null | grep -q "$APP_PACKAGE" && \
 
 # ── Done ─────────────────────────────────────────────────────
 echo ""
-echo "=== Smoke tests complete ==="
+echo "=== PicPocket smoke tests complete ==="
