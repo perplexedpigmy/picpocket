@@ -16,6 +16,7 @@ data class DriveIndex(
     var localDeviceId: String = "",
     var rootFolderId: String = "",
     var rootTreeUri: String = "",
+    var rootFolderName: String = "",
 )
 
 @Serializable
@@ -93,6 +94,13 @@ class LocalDriveIndex @Inject constructor(
         save()
     }
 
+    fun getRootFolderName(): String = index.rootFolderName
+
+    fun setRootFolderName(name: String) {
+        index.rootFolderName = name
+        save()
+    }
+
     fun hasValidFolder(): Boolean {
         return index.rootTreeUri.isNotBlank()
     }
@@ -100,6 +108,7 @@ class LocalDriveIndex @Inject constructor(
     fun clearFolder() {
         index.rootFolderId = ""
         index.rootTreeUri = ""
+        index.rootFolderName = ""
         save()
     }
 

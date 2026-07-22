@@ -12,7 +12,7 @@ class SyncSettings @Inject constructor(
     private val prefs = context.getSharedPreferences("sync_settings", 0)
 
     var syncEnabled: Boolean
-        get() = prefs.getBoolean(KEY_SYNC_ENABLED, true)
+        get() = prefs.getBoolean(KEY_SYNC_ENABLED, false)
         set(value) = prefs.edit().putBoolean(KEY_SYNC_ENABLED, value).apply()
 
     var syncIntervalHours: Int

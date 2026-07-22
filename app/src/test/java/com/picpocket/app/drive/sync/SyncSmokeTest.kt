@@ -25,6 +25,7 @@ class SyncSmokeTest {
     val coroutineRule = MainCoroutineRule()
 
     private val driveAuthManager = mockk<com.picpocket.app.drive.DriveAuthManager>()
+    private val documentRepository = mockk<com.picpocket.app.data.repository.DocumentRepository>()
     private val documentStore = mockk<com.picpocket.app.data.store.DocumentStore>()
     private val uploadEngine = mockk<UploadEngine>()
     private val downloadEngine = mockk<DownloadEngine>()
@@ -37,6 +38,7 @@ class SyncSmokeTest {
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<android.content.Context>()
     private val journal = mockk<SyncJournal>(relaxed = true)
+    private val syncMutex = mockk<SyncMutex>()
 
     private lateinit var syncManager: SyncManager
 
@@ -47,6 +49,8 @@ class SyncSmokeTest {
         every { syncSettings.syncEnabled } returns true
         every { localDriveIndex.getLocalDeviceId() } returns "device-1"
         every { localDriveIndex.getRootFolderId() } returns ""
+        every { localDriveIndex.getRootTreeUri() } returns ""
+        every { localDriveIndex.hasValidFolder() } returns true
         every { defaultSyncScheduler.setSyncCallback(any()) } returns Unit
         every { journal.entriesFromCheckpoint() } returns emptyList()
         every { journal.isEmpty() } returns true
@@ -56,10 +60,18 @@ class SyncSmokeTest {
         coEvery { retryHandler.onSuccess() } returns Unit
         coEvery { retryHandler.onFailure() } returns Unit
         coEvery { conflictResolver.detectConflicts(any(), any()) } returns Unit
+        every { conflictResolver.getActiveConflicts() } returns emptyList()
         coEvery { deviceRegistry.detectOrphans(any(), any()) } returns Unit
+        every { documentRepository.notifyDocumentsChanged() } returns Unit
+        coEvery { deviceRegistry.syncRegistryFromDrive() } returns Unit
+        coEvery { deviceRegistry.syncRegistryToDrive() } returns Unit
+        coEvery { syncMutex.initialize() } returns Unit
+        coEvery { syncMutex.acquire() } returns true
+        coEvery { syncMutex.release() } returns Unit
 
         syncManager = SyncManager(
             driveAuthManager,
+            documentRepository,
             documentStore,
             uploadEngine,
             downloadEngine,
@@ -71,6 +83,7 @@ class SyncSmokeTest {
             retryHandler,
             syncSettings,
             journal,
+            syncMutex,
             context,
         )
     }

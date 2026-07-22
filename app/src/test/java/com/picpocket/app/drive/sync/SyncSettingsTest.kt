@@ -20,8 +20,8 @@ class SyncSettingsTest {
     }
 
     @Test
-    fun `syncEnabled defaults to true`() {
-        assertTrue(settings.syncEnabled)
+    fun `syncEnabled defaults to false`() {
+        assertFalse(settings.syncEnabled)
     }
 
     @Test

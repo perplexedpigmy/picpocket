@@ -55,7 +55,6 @@ class UploadEngine @Inject constructor(
         val syncDoc = doc.copy(
             syncVersion = doc.syncVersion + 1,
             syncTimestamp = System.currentTimeMillis(),
-            syncDirty = false,
         )
         val metadataBytes = json.encodeToString(syncDoc).toByteArray(Charsets.UTF_8)
         uploadMetadataBytes(docId, metadataBytes)

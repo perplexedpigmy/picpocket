@@ -14,6 +14,7 @@ import com.picpocket.app.ui.screens.conflicts.ConflictResolutionScreen
 import com.picpocket.app.ui.screens.deleted.DeletedDocumentsScreen
 import com.picpocket.app.ui.screens.pairing.DevicePairingScreen
 import com.picpocket.app.ui.screens.settings.SettingsScreen
+import com.picpocket.app.ui.screens.sync.SyncScreen
 import com.picpocket.app.ui.screens.tags.TagManagementScreen
 import com.picpocket.app.ui.screens.viewer.PageViewerScreen
 
@@ -24,6 +25,7 @@ object Routes {
     const val DOCUMENT_DETAIL = "document/{documentId}"
     const val PAGE_VIEWER = "viewer/{documentId}/{pageIndex}"
     const val SETTINGS = "settings"
+    const val SYNC = "sync"
     const val DONATE = "donate"
     const val TAGS = "tags"
     const val CONFLICTS = "conflicts"
@@ -104,9 +106,12 @@ fun PicPocketNavGraph(navController: NavHostController) {
                 onNavigateBack = { navController.popBackStack() },
                 onDonateClick = { navController.navigate(Routes.DONATE) },
                 onTagsClick = { navController.navigate(Routes.TAGS) },
-                onConflictsClick = { navController.navigate(Routes.CONFLICTS) },
-                onDeletedClick = { navController.navigate(Routes.DELETED) },
-                onPairingClick = { navController.navigate(Routes.PAIRING) },
+                onSyncClick = { navController.navigate(Routes.SYNC) },
+            )
+        }
+        composable(Routes.SYNC) {
+            SyncScreen(
+                onNavigateBack = { navController.popBackStack() },
             )
         }
         composable(Routes.CONFLICTS) {

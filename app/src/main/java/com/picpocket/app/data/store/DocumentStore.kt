@@ -26,7 +26,6 @@ data class StoredDocument(
     val pageSize: String? = null,
     val syncVersion: Int = 0,
     val syncTimestamp: Long = 0L,
-    val syncDirty: Boolean = false,
     val syncExclude: Boolean = false,
 )
 

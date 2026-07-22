@@ -1,9 +1,6 @@
 package com.picpocket.app.drive.sync
 
 import android.content.Context
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
@@ -27,16 +24,6 @@ class DefaultSyncScheduler @Inject constructor(
     private val workManager = WorkManager.getInstance(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var syncCallback: (suspend () -> Unit)? = null
-
-    init {
-        ProcessLifecycleOwner.get().lifecycle.addObserver(
-            LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) {
-                    requestImmediateSync()
-                }
-            },
-        )
-    }
 
     fun setSyncCallback(callback: suspend () -> Unit) {
         syncCallback = callback

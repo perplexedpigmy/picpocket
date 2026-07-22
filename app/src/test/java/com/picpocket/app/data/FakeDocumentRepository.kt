@@ -196,6 +196,8 @@ class FakeDocumentRepository : DocumentRepository {
         return tags.map { list -> list.filter { it.name.contains(query, ignoreCase = true) } }
     }
 
+    override fun notifyDocumentsChanged() {}
+
     override suspend fun createTag(name: String): Long {
         val id = nextTagId++
         val color = ((tags.value.size) % 8)

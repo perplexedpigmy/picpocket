@@ -1,8 +1,10 @@
 package com.picpocket.app.drive.sync
 
 import android.content.Context
+import com.picpocket.app.data.repository.DocumentRepository
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
+import com.picpocket.app.data.store.StoredPage
 import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.DriveConnectivityChecker
@@ -10,6 +12,7 @@ import com.picpocket.app.drive.SyncState
 import com.picpocket.app.util.MainCoroutineRule
 import io.mockk.coEvery
 import io.mockk.every
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +32,7 @@ class SyncManagerTest {
     val coroutineRule = MainCoroutineRule()
 
     private val driveAuthManager = mockk<DriveAuthManager>()
+    private val documentRepository = mockk<DocumentRepository>()
     private val documentStore = mockk<DocumentStore>()
     private val uploadEngine = mockk<UploadEngine>()
     private val downloadEngine = mockk<DownloadEngine>()
@@ -41,6 +45,7 @@ class SyncManagerTest {
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<Context>()
     private val journal = mockk<SyncJournal>(relaxed = true)
+    private val syncMutex = mockk<SyncMutex>()
 
     private lateinit var syncManager: SyncManager
 
@@ -52,6 +57,7 @@ class SyncManagerTest {
         every { localDriveIndex.getLocalDeviceId() } returns "device-1"
         every { localDriveIndex.getRootFolderId() } returns ""
         every { localDriveIndex.getRootTreeUri() } returns ""
+        every { localDriveIndex.hasValidFolder() } returns true
         every { defaultSyncScheduler.setSyncCallback(any()) } returns Unit
         every { journal.entriesFromCheckpoint() } returns emptyList()
         every { journal.isEmpty() } returns true
@@ -61,10 +67,18 @@ class SyncManagerTest {
         coEvery { retryHandler.onSuccess() } returns Unit
         coEvery { retryHandler.onFailure() } returns Unit
         coEvery { conflictResolver.detectConflicts(any(), any()) } returns Unit
+        every { conflictResolver.getActiveConflicts() } returns emptyList()
         coEvery { deviceRegistry.detectOrphans(any(), any()) } returns Unit
+        every { documentRepository.notifyDocumentsChanged() } returns Unit
+        coEvery { deviceRegistry.syncRegistryFromDrive() } returns Unit
+        coEvery { deviceRegistry.syncRegistryToDrive() } returns Unit
+        coEvery { syncMutex.initialize() } returns Unit
+        coEvery { syncMutex.acquire() } returns true
+        coEvery { syncMutex.release() } returns Unit
 
         syncManager = SyncManager(
             driveAuthManager,
+            documentRepository,
             documentStore,
             uploadEngine,
             downloadEngine,
@@ -76,6 +90,7 @@ class SyncManagerTest {
             retryHandler,
             syncSettings,
             journal,
+            syncMutex,
             context,
         )
     }
@@ -108,7 +123,6 @@ class SyncManagerTest {
             name = "Test",
             createdAt = 0L,
             updatedAt = 0L,
-            syncDirty = true,
         )
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
         coEvery { downloadEngine.listRemoteDocuments() } returns emptyList()
@@ -128,7 +142,6 @@ class SyncManagerTest {
             name = "Test",
             createdAt = 0L,
             updatedAt = 0L,
-            syncDirty = true,
             syncExclude = true,
         )
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
@@ -167,5 +180,94 @@ class SyncManagerTest {
 
         val state = syncManager.syncState.value
         assert(state is SyncState.Error)
+    }
+
+    @Test
+    fun `sync short-circuits when mutex locked by another device`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments() } returns emptyList()
+        coEvery { syncMutex.acquire() } returns false
+
+        syncManager.performSync()
+
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+        coEvery { syncMutex.release() } returns Unit
+    }
+
+    @Test
+    fun `sync re-uploads when syncVersion is 0 and remote exists`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L, syncVersion = 0)
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1",
+            fileNames = listOf("page_001.jpg", "metadata.json"),
+            metadata = doc,
+            isDeleted = false,
+        )
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+        every { journal.isEmpty() } returns true
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
+        coEvery { driveConnectivityChecker.isNetworkAvailable() } returns true
+        coEvery { downloadEngine.checkFiles("content://tree/", "doc-1", doc) } returns emptyList()
+
+        syncManager.performSync()
+
+        coVerify { uploadEngine.uploadDocument(doc) }
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `sync re-uploads when checkFiles reports missing files`() = runTest {
+        val doc = StoredDocument(
+            id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L, syncVersion = 1,
+            pages = mutableListOf(StoredPage(pageNumber = 1, filename = "page_001.jpg", createdAt = 0L)),
+        )
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1",
+            fileNames = listOf("metadata.json"),
+            metadata = doc,
+            isDeleted = false,
+        )
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+        every { journal.isEmpty() } returns true
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
+        coEvery { downloadEngine.checkFiles("content://tree/", "doc-1", doc) } returns listOf("page_001.jpg")
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
+
+        syncManager.performSync()
+
+        coVerify { uploadEngine.uploadDocument(doc) }
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `sync excludes docs that are deleted remotely`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1",
+            fileNames = listOf(".deleted"),
+            metadata = null,
+            isDeleted = true,
+        )
+        every { localDriveIndex.getRootTreeUri() } returns ""
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
+
+        syncManager.performSync()
+
+        coVerify(inverse = true) { uploadEngine.uploadDocument(doc) }
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `sync reports error when no folder configured`() = runTest {
+        every { localDriveIndex.hasValidFolder() } returns false
+        syncManager.performSync()
+        val state = syncManager.syncState.value
+        assertEquals(SyncState.Error("No folder configured"), state)
     }
 }

@@ -230,6 +230,26 @@ class DocumentRepositoryImpl @Inject constructor(
         }
     }
 
+    override fun notifyDocumentsChanged() {
+        scope.launch {
+            refreshDocuments()
+            syncMissingTags()
+        }
+    }
+
+    private suspend fun syncMissingTags() {
+        val existingNames = tagDao.getAll().map { it.name }.toSet()
+        val neededNames = store.listDocuments().getOrNull()
+            ?.flatMap { it.tags }
+            ?.distinct()
+            ?.filter { it !in existingNames } ?: return
+        var colorIndex = existingNames.size
+        for (name in neededNames) {
+            tagDao.insert(TagEntity(name = name, colorIndex = colorIndex % 8))
+            colorIndex++
+        }
+    }
+
     override suspend fun rescanPage(documentId: DocumentId, pageNumber: Int, imageUri: String): Result<Unit> {
         return store.readMetadata(documentId).mapCatching { doc ->
             val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }

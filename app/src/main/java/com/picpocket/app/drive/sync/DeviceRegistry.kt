@@ -2,6 +2,9 @@ package com.picpocket.app.drive.sync
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
@@ -19,6 +22,7 @@ data class OrphanedDocument(
     val deletedAt: Long,
     val pageCount: Int,
     var acknowledged: Boolean = false,
+    val isOwnDeletion: Boolean = false,
 )
 
 @Singleton
@@ -32,6 +36,10 @@ class DeviceRegistry @Inject constructor(
     private val orphans = mutableListOf<OrphanedDocument>()
 
     fun getOrphans(): List<OrphanedDocument> = orphans.filter { !it.acknowledged }
+
+    fun getMyDeleted(): List<OrphanedDocument> = getOrphans().filter { it.isOwnDeletion }
+
+    fun getOthersDeleted(): List<OrphanedDocument> = getOrphans().filter { !it.isOwnDeletion }
 
     suspend fun detectOrphans(localDocs: List<StoredDocument>, remoteDocs: List<DownloadEngine.RemoteDocument>) {
         val treeUri = localDriveIndex.getRootTreeUri()
@@ -55,6 +63,7 @@ class DeviceRegistry @Inject constructor(
                 } else null
             } else null
 
+            val localDeviceId = localDriveIndex.getLocalDeviceId()
             val deletingDeviceName = if (byDevice != null) {
                 devices[byDevice.byDevice]?.name ?: byDevice.byDevice
             } else "Unknown device"
@@ -66,6 +75,7 @@ class DeviceRegistry @Inject constructor(
                     deletingDeviceName = deletingDeviceName,
                     deletedAt = byDevice?.deletedAt ?: 0L,
                     pageCount = localDoc.pages.size,
+                    isOwnDeletion = byDevice?.byDevice == localDeviceId,
                 ),
             )
         }
@@ -77,7 +87,7 @@ class DeviceRegistry @Inject constructor(
             driveFileManager.deleteFileByName(treeUri, docId, ".deleted")
         }
         val doc = documentStore.readMetadata(docId).getOrNull() ?: return
-        val updated = doc.copy(syncDirty = true, syncVersion = 0, syncTimestamp = System.currentTimeMillis())
+        val updated = doc.copy(syncVersion = 0, syncTimestamp = System.currentTimeMillis())
         documentStore.writeMetadata(docId, updated)
         val orphan = orphans.find { it.docId == docId }
         orphan?.acknowledged = true
@@ -115,6 +125,73 @@ class DeviceRegistry @Inject constructor(
         }
     }
 
+    fun getDeviceName(): String {
+        val systemName = try {
+            Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
+        } catch (_: Exception) { null }
+        return if (!systemName.isNullOrBlank()) systemName else Build.MODEL
+    }
+
+    suspend fun syncRegistryToDrive() {
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return
+        val deviceId = localDriveIndex.getLocalDeviceId()
+        if (deviceId.isBlank()) return
+        localDriveIndex.setDevice(
+            deviceId,
+            localDriveIndex.getDevices()[deviceId]?.copy(
+                name = getDeviceName(),
+                lastSeen = System.currentTimeMillis(),
+            ) ?: DeviceInfo(
+                name = getDeviceName(),
+                firstSeen = System.currentTimeMillis(),
+                lastSeen = System.currentTimeMillis(),
+            ),
+        )
+        val registry = SharedDeviceRegistry(
+            devices = localDriveIndex.getDevices().map { (id, info) ->
+                SharedDevice(id = id, name = info.name, lastSeen = info.lastSeen)
+            },
+        )
+        val data = json.encodeToString(registry).toByteArray(Charsets.UTF_8)
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+        if (root == null) { Log.w(TAG, "syncRegistryToDrive: root null"); return }
+        val existing = root.findFile(REGISTRY_FILE)
+        Log.d(TAG, "syncRegistryToDrive: existing=$existing")
+        existing?.delete()
+        val created = root.createFile("application/json", REGISTRY_FILE)
+        Log.d(TAG, "syncRegistryToDrive: created=$created")
+        if (created != null) {
+            context.contentResolver.openOutputStream(created.uri)?.use { it.write(data) }
+        }
+    }
+
+    suspend fun syncRegistryFromDrive() {
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+        if (root == null) { Log.w(TAG, "syncRegistryFromDrive: root null"); return }
+        val file = root.findFile(REGISTRY_FILE)
+        Log.d(TAG, "syncRegistryFromDrive: file=$file")
+        if (file == null) return
+        val bytes = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() } ?: return
+        val remote = try {
+            json.decodeFromString<SharedDeviceRegistry>(String(bytes, Charsets.UTF_8))
+        } catch (_: Exception) { return }
+        val localDeviceId = localDriveIndex.getLocalDeviceId()
+        for (device in remote.devices) {
+            if (device.id == localDeviceId) continue
+            val existing = localDriveIndex.getDevices()[device.id]
+            if (existing == null) {
+                localDriveIndex.setDevice(
+                    device.id,
+                    DeviceInfo(name = device.name, firstSeen = device.lastSeen, lastSeen = device.lastSeen),
+                )
+            }
+        }
+        Log.d(TAG, "syncRegistryFromDrive: imported ${remote.devices.size} device(s)")
+    }
+
     suspend fun cleanDrive() {
         val treeUri = localDriveIndex.getRootTreeUri()
         if (treeUri.isBlank()) return
@@ -143,4 +220,21 @@ class DeviceRegistry @Inject constructor(
             }
         }
     }
+
+    companion object {
+        private const val TAG = "DeviceRegistry"
+        private const val REGISTRY_FILE = "devices.json"
+    }
 }
+
+@Serializable
+data class SharedDevice(
+    val id: String,
+    val name: String,
+    val lastSeen: Long,
+)
+
+@Serializable
+data class SharedDeviceRegistry(
+    val devices: List<SharedDevice>,
+)
