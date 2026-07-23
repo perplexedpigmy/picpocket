@@ -1,6 +1,7 @@
 package com.picpocket.app.drive.sync
 
 import android.content.Context
+import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.repository.DocumentRepository
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
@@ -8,6 +9,7 @@ import com.picpocket.app.data.store.StoredPage
 import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.DriveConnectivityChecker
+import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.SyncState
 import com.picpocket.app.util.MainCoroutineRule
 import io.mockk.coEvery
@@ -41,6 +43,8 @@ class SyncManagerTest {
     private val defaultSyncScheduler = mockk<DefaultSyncScheduler>()
     private val conflictResolver = mockk<ConflictResolver>()
     private val deviceRegistry = mockk<DeviceRegistry>()
+    private val driveFileManager = mockk<DriveFileManager>()
+    private val encryptionManager = mockk<EncryptionManager>()
     private val retryHandler = mockk<RetryHandler>()
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<Context>()
@@ -68,10 +72,13 @@ class SyncManagerTest {
         coEvery { retryHandler.onFailure() } returns Unit
         coEvery { conflictResolver.detectConflicts(any(), any()) } returns Unit
         every { conflictResolver.getActiveConflicts() } returns emptyList()
-        coEvery { deviceRegistry.detectOrphans(any(), any()) } returns Unit
+        coEvery { deviceRegistry.detectOrphans(any(), any(), any()) } returns Unit
         every { documentRepository.notifyDocumentsChanged() } returns Unit
         coEvery { deviceRegistry.syncRegistryFromDrive() } returns Unit
-        coEvery { deviceRegistry.syncRegistryToDrive() } returns Unit
+        every { deviceRegistry.remoteEncrypted } returns false
+        every { encryptionManager.isEncryptionEnabled } returns false
+        coEvery { deviceRegistry.syncRegistryToDrive(any<Boolean>()) } returns Unit
+        coEvery { driveFileManager.prefetchRemoteFiles(any()) } returns emptyMap()
         coEvery { syncMutex.initialize() } returns Unit
         coEvery { syncMutex.acquire() } returns true
         coEvery { syncMutex.release() } returns Unit
@@ -86,7 +93,9 @@ class SyncManagerTest {
             driveConnectivityChecker,
             defaultSyncScheduler,
             conflictResolver,
+            driveFileManager,
             deviceRegistry,
+            encryptionManager,
             retryHandler,
             syncSettings,
             journal,
@@ -125,10 +134,10 @@ class SyncManagerTest {
             updatedAt = 0L,
         )
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
-        coEvery { downloadEngine.listRemoteDocuments() } returns emptyList()
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
         coEvery { uploadEngine.uploadDocument(doc) } returns true
         coEvery { conflictResolver.detectConflicts(any(), any()) } returns Unit
-        coEvery { deviceRegistry.detectOrphans(any(), any()) } returns Unit
+        coEvery { deviceRegistry.detectOrphans(any(), any(), any()) } returns Unit
 
         syncManager.performSync()
 
@@ -145,7 +154,7 @@ class SyncManagerTest {
             syncExclude = true,
         )
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
-        coEvery { downloadEngine.listRemoteDocuments() } returns emptyList()
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
 
         syncManager.performSync()
 
@@ -161,10 +170,10 @@ class SyncManagerTest {
             metadata = StoredDocument(id = "remote-1", name = "Remote", createdAt = 0L, updatedAt = 0L),
             isDeleted = false,
         )
-        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
         coEvery { documentStore.writeMetadata(any(), any()) } returns Result.success(Unit)
         coEvery { documentStore.pageFile(any(), any()) } returns java.io.File.createTempFile("test", ".jpg")
-        coEvery { downloadEngine.downloadFile(any(), any(), any()) } returns byteArrayOf(1, 2, 3)
+        coEvery { downloadEngine.downloadFile(any(), any(), any(), any()) } returns byteArrayOf(1, 2, 3)
 
         syncManager.performSync()
 
@@ -186,7 +195,7 @@ class SyncManagerTest {
     fun `sync short-circuits when mutex locked by another device`() = runTest {
         val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
-        coEvery { downloadEngine.listRemoteDocuments() } returns emptyList()
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
         coEvery { syncMutex.acquire() } returns false
 
         syncManager.performSync()
@@ -207,10 +216,10 @@ class SyncManagerTest {
         every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
         every { journal.isEmpty() } returns true
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
-        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
         coEvery { uploadEngine.uploadDocument(doc) } returns true
         coEvery { driveConnectivityChecker.isNetworkAvailable() } returns true
-        coEvery { downloadEngine.checkFiles("content://tree/", "doc-1", doc) } returns emptyList()
+        coEvery { downloadEngine.checkFiles(any(), any(), any(), any()) } returns emptyList()
 
         syncManager.performSync()
 
@@ -233,8 +242,8 @@ class SyncManagerTest {
         every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
         every { journal.isEmpty() } returns true
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
-        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
-        coEvery { downloadEngine.checkFiles("content://tree/", "doc-1", doc) } returns listOf("page_001.jpg")
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
+        coEvery { downloadEngine.checkFiles("content://tree/", "doc-1", doc, any()) } returns listOf("page_001.jpg")
         coEvery { uploadEngine.uploadDocument(doc) } returns true
 
         syncManager.performSync()
@@ -254,7 +263,7 @@ class SyncManagerTest {
         )
         every { localDriveIndex.getRootTreeUri() } returns ""
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
-        coEvery { downloadEngine.listRemoteDocuments() } returns listOf(remote)
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
         coEvery { uploadEngine.uploadDocument(doc) } returns true
 
         syncManager.performSync()
@@ -269,5 +278,127 @@ class SyncManagerTest {
         syncManager.performSync()
         val state = syncManager.syncState.value
         assertEquals(SyncState.Error("No folder configured"), state)
+    }
+
+    @Test
+    fun `journal checkpoint does not advance when ReEncrypt fails`() = runTest {
+        val reEncryptEntry = JournalEntry.ReEncrypt("doc-fail")
+        every { journal.entriesFromCheckpoint() } returns listOf(reEncryptEntry)
+        coEvery { uploadEngine.reEncryptDocument("doc-fail") } returns Result.failure(Exception("upload failed"))
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+
+        syncManager.performSync()
+
+        coVerify(inverse = true) { journal.advanceCheckpoint() }
+    }
+
+    @Test
+    fun `journal checkpoint advances when ReEncrypt succeeds`() = runTest {
+        val reEncryptEntry = JournalEntry.ReEncrypt("doc-ok")
+        every { journal.entriesFromCheckpoint() } returns listOf(reEncryptEntry)
+        coEvery { uploadEngine.reEncryptDocument("doc-ok") } returns Result.success(Unit)
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+
+        syncManager.performSync()
+
+        coVerify { journal.advanceCheckpoint() }
+    }
+
+    // ── Encryption gating — Phase 7 ──
+
+    @Test
+    fun `gating blocks sync when remote encrypted and no passphrase set`() = runTest {
+        every { deviceRegistry.remoteEncrypted } returns true
+        every { encryptionManager.isEncryptionEnabled } returns false
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+
+        syncManager.performSync()
+
+        val state = syncManager.syncState.value
+        assert(state is SyncState.Error)
+        assertEquals("This Drive is encrypted. Enter your passphrase to sync.", (state as SyncState.Error).message)
+    }
+
+    @Test
+    fun `gating allows sync when remote encrypted and passphrase set correctly`() = runTest {
+        every { deviceRegistry.remoteEncrypted } returns true
+        every { encryptionManager.isEncryptionEnabled } returns true
+        val meta = StoredDocument(id = "remote-1", name = "Doc", createdAt = 0L, updatedAt = 0L)
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "remote-1",
+            fileNames = listOf("metadata.json"),
+            metadata = meta,
+            isDeleted = false,
+        )
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
+        coEvery { documentStore.writeMetadata(any(), any()) } returns Result.success(Unit)
+
+        syncManager.performSync()
+
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `gating blocks sync when remote encrypted and wrong passphrase`() = runTest {
+        every { deviceRegistry.remoteEncrypted } returns true
+        every { encryptionManager.isEncryptionEnabled } returns true
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "remote-1",
+            fileNames = listOf("metadata.json"),
+            metadata = null,
+            isDeleted = false,
+        )
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
+
+        syncManager.performSync()
+
+        val state = syncManager.syncState.value
+        assert(state is SyncState.Error)
+        assertEquals("Wrong passphrase. Sync disabled until corrected.", (state as SyncState.Error).message)
+    }
+
+    @Test
+    fun `gating blocks sync when remote encrypted no passphrase but has ReEncrypt entries`() = runTest {
+        every { deviceRegistry.remoteEncrypted } returns true
+        every { encryptionManager.isEncryptionEnabled } returns false
+        val reEncryptEntry = JournalEntry.ReEncrypt("doc-1")
+        every { journal.entriesFromCheckpoint() } returns listOf(reEncryptEntry)
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+
+        syncManager.performSync()
+
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `gating synthesizes ReEncrypt when remote not encrypted and passphrase set`() = runTest {
+        every { deviceRegistry.remoteEncrypted } returns false
+        every { encryptionManager.isEncryptionEnabled } returns true
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+
+        syncManager.performSync()
+
+        coVerify { journal.append(JournalEntry.ReEncrypt("doc-1")) }
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `gating allows sync when remote and local both unencrypted`() = runTest {
+        every { deviceRegistry.remoteEncrypted } returns false
+        every { encryptionManager.isEncryptionEnabled } returns false
+        coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+
+        syncManager.performSync()
+
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
     }
 }

@@ -19,6 +19,14 @@ class EncryptionManager @Inject constructor() {
     private var cachedPassphrase: String? = null
     private var cachedSalt: ByteArray? = null
 
+    private val decryptKeyCache = mutableMapOf<String, SecretKey>()
+
+    private val MAGIC_HEADER = byteArrayOf(0x50, 0x4B, 0x45, 0x31)
+
+    fun isEncrypted(data: ByteArray): Boolean {
+        return cachedKey != null && data.size >= MAGIC_HEADER.size && data.copyOf(MAGIC_HEADER.size).contentEquals(MAGIC_HEADER)
+    }
+
     val isEncryptionEnabled: Boolean
         get() = cachedKey != null
 
@@ -27,7 +35,9 @@ class EncryptionManager @Inject constructor() {
         if (passphrase.isBlank()) {
             cachedKey = null
             cachedSalt = null
+            decryptKeyCache.clear()
         } else {
+            decryptKeyCache.clear()
             val salt = ByteArray(16)
             SecureRandom().nextBytes(salt)
             cachedSalt = salt
@@ -40,6 +50,7 @@ class EncryptionManager @Inject constructor() {
         cachedKey = null
         cachedPassphrase = null
         cachedSalt = null
+        decryptKeyCache.clear()
     }
 
     fun encrypt(data: ByteArray): ByteArray {
@@ -49,19 +60,24 @@ class EncryptionManager @Inject constructor() {
         cipher.init(Cipher.ENCRYPT_MODE, key)
         val iv = cipher.iv
         val ciphertext = cipher.doFinal(data)
-        return salt + iv + ciphertext
+        return MAGIC_HEADER + salt + iv + ciphertext
     }
 
     fun decrypt(data: ByteArray): ByteArray {
         val passphrase = cachedPassphrase ?: return data
-        if (data.size < 28) return data
-        val salt = data.sliceArray(0..15)
-        val body = data.sliceArray(16 until data.size)
-        val keyBytes = deriveKey(passphrase, salt)
-        val key = SecretKeySpec(keyBytes, "AES")
+        if (!isEncrypted(data)) return data
+        val body = data.sliceArray(MAGIC_HEADER.size until data.size)
+        if (body.size < 28) return data
+        val salt = body.sliceArray(0..15)
+        val rest = body.sliceArray(16 until body.size)
+        val saltKey = salt.joinToString("") { "%02x".format(it) }
+        val key = decryptKeyCache.getOrPut(saltKey) {
+            val keyBytes = deriveKey(passphrase, salt)
+            SecretKeySpec(keyBytes, "AES")
+        }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val iv = body.sliceArray(0..11)
-        val ciphertext = body.sliceArray(12 until body.size)
+        val iv = rest.sliceArray(0..11)
+        val ciphertext = rest.sliceArray(12 until rest.size)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
         return cipher.doFinal(ciphertext)
     }

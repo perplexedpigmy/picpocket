@@ -34,6 +34,8 @@ class DeviceRegistry @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val orphans = mutableListOf<OrphanedDocument>()
+    var remoteEncrypted: Boolean = false
+        private set
 
     fun getOrphans(): List<OrphanedDocument> = orphans.filter { !it.acknowledged }
 
@@ -41,7 +43,11 @@ class DeviceRegistry @Inject constructor(
 
     fun getOthersDeleted(): List<OrphanedDocument> = getOrphans().filter { !it.isOwnDeletion }
 
-    suspend fun detectOrphans(localDocs: List<StoredDocument>, remoteDocs: List<DownloadEngine.RemoteDocument>) {
+    suspend fun detectOrphans(
+        localDocs: List<StoredDocument>,
+        remoteDocs: List<DownloadEngine.RemoteDocument>,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ) {
         val treeUri = localDriveIndex.getRootTreeUri()
         if (treeUri.isBlank()) return
         orphans.clear()
@@ -53,7 +59,7 @@ class DeviceRegistry @Inject constructor(
             if (localDoc == null) continue
 
             val byDevice = if (".deleted" in remote.fileNames) {
-                val data = driveFileManager.readFile(treeUri, remote.docId, ".deleted")
+                val data = driveFileManager.readFile(treeUri, remote.docId, ".deleted", remoteCache)
                 if (data != null) {
                     try {
                         json.decodeFromString<TombstoneData>(String(data, Charsets.UTF_8))
@@ -132,7 +138,7 @@ class DeviceRegistry @Inject constructor(
         return if (!systemName.isNullOrBlank()) systemName else Build.MODEL
     }
 
-    suspend fun syncRegistryToDrive() {
+    suspend fun syncRegistryToDrive(encrypted: Boolean = false) {
         val treeUri = localDriveIndex.getRootTreeUri()
         if (treeUri.isBlank()) return
         val deviceId = localDriveIndex.getLocalDeviceId()
@@ -149,6 +155,7 @@ class DeviceRegistry @Inject constructor(
             ),
         )
         val registry = SharedDeviceRegistry(
+            encrypted = encrypted,
             devices = localDriveIndex.getDevices().map { (id, info) ->
                 SharedDevice(id = id, name = info.name, lastSeen = info.lastSeen)
             },
@@ -156,9 +163,14 @@ class DeviceRegistry @Inject constructor(
         val data = json.encodeToString(registry).toByteArray(Charsets.UTF_8)
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
         if (root == null) { Log.w(TAG, "syncRegistryToDrive: root null"); return }
-        val existing = root.findFile(REGISTRY_FILE)
-        Log.d(TAG, "syncRegistryToDrive: existing=$existing")
-        existing?.delete()
+        try {
+            context.contentResolver.refresh(root.uri, null, null)
+        } catch (_: Exception) { }
+        for (child in root.listFiles()) {
+            if (child.name == REGISTRY_FILE) {
+                child.delete()
+            }
+        }
         val created = root.createFile("application/json", REGISTRY_FILE)
         Log.d(TAG, "syncRegistryToDrive: created=$created")
         if (created != null) {
@@ -171,13 +183,15 @@ class DeviceRegistry @Inject constructor(
         if (treeUri.isBlank()) return
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
         if (root == null) { Log.w(TAG, "syncRegistryFromDrive: root null"); return }
-        val file = root.findFile(REGISTRY_FILE)
+        try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Exception) { }
+        val file = root.listFiles().find { it.name == REGISTRY_FILE }
         Log.d(TAG, "syncRegistryFromDrive: file=$file")
-        if (file == null) return
+        if (file == null) { Log.w(TAG, "syncRegistryFromDrive: $REGISTRY_FILE not found"); return }
         val bytes = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() } ?: return
         val remote = try {
             json.decodeFromString<SharedDeviceRegistry>(String(bytes, Charsets.UTF_8))
         } catch (_: Exception) { return }
+        remoteEncrypted = remote.encrypted
         val localDeviceId = localDriveIndex.getLocalDeviceId()
         for (device in remote.devices) {
             if (device.id == localDeviceId) continue
@@ -237,4 +251,5 @@ data class SharedDevice(
 @Serializable
 data class SharedDeviceRegistry(
     val devices: List<SharedDevice>,
+    val encrypted: Boolean = false,
 )

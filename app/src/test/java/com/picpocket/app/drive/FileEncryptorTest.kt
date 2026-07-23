@@ -101,4 +101,30 @@ class FileEncryptorTest {
         manager.clearPassphrase()
         assertFalse(encryptor.isEncrypted(encrypted))
     }
+
+    @Test
+    fun `encrypted output starts with magic header`() {
+        manager.setPassphrase(testPassphrase)
+        val encrypted = encryptor.encrypt("test".toByteArray())
+        val magicHeader = byteArrayOf(0x50, 0x4B, 0x45, 0x31)
+        assertEquals(magicHeader.size, 4)
+        assertArrayEquals(magicHeader, encrypted.copyOf(4))
+    }
+
+    @Test
+    fun `decrypt returns raw data when magic header absent and passphrase set`() {
+        manager.setPassphrase(testPassphrase)
+        val plain = "plain text data that is longer than 28 bytes for the test".toByteArray()
+        val result = encryptor.decrypt(plain)
+        assertArrayEquals(plain, result)
+    }
+
+    @Test
+    fun `decrypt does not throw for plain data same as encrypted size without magic header`() {
+        manager.setPassphrase(testPassphrase)
+        val encrypted = encryptor.encrypt("reference".toByteArray())
+        val plainData = ByteArray(encrypted.size) { 0x42 }
+        val result = encryptor.decrypt(plainData)
+        assertArrayEquals(plainData, result)
+    }
 }

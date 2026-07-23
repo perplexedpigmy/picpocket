@@ -11,6 +11,7 @@ import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.DriveConnectivityChecker
+import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.SyncState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -34,7 +35,9 @@ class SyncManager @Inject constructor(
     private val driveConnectivityChecker: DriveConnectivityChecker,
     private val defaultSyncScheduler: DefaultSyncScheduler,
     private val conflictResolver: ConflictResolver,
+    private val driveFileManager: DriveFileManager,
     private val deviceRegistry: DeviceRegistry,
+    private val encryptionManager: EncryptionManager,
     private val retryHandler: RetryHandler,
     private val syncSettings: SyncSettings,
     private val journal: SyncJournal,
@@ -101,11 +104,42 @@ class SyncManager @Inject constructor(
 
                     refreshSafCache()
 
+                    Log.d(TAG, "performSync: prefetching remote file tree...")
+                    val remoteCache = driveFileManager.prefetchRemoteFiles(
+                        localDriveIndex.getRootTreeUri()
+                    )
+
                     Log.d(TAG, "performSync: listing remote docs...")
-                    val remoteDocs = downloadEngine.listRemoteDocuments()
+                    val remoteDocs = downloadEngine.listRemoteDocuments(remoteCache)
 
                     deviceRegistry.syncRegistryFromDrive()
-                    deviceRegistry.syncRegistryToDrive()
+
+                    val remoteEncrypted = deviceRegistry.remoteEncrypted
+                    val passphraseSet = encryptionManager.isEncryptionEnabled
+                    val hasReEncryptEntries = journal.entriesFromCheckpoint().any { it is JournalEntry.ReEncrypt }
+
+                    Log.d(TAG, "performSync: gating remoteEncrypted=$remoteEncrypted passphraseSet=$passphraseSet remoteDocsSize=${remoteDocs.size} hasReEncryptEntries=$hasReEncryptEntries")
+
+                    if (remoteEncrypted && !passphraseSet && !hasReEncryptEntries) {
+                        Log.w(TAG, "performSync: Drive encrypted, passphrase required")
+                        _syncState.value = SyncState.Error("This Drive is encrypted. Enter your passphrase to sync.")
+                        throw SyncAborted()
+                    }
+
+                    if (remoteEncrypted && passphraseSet && remoteDocs.isNotEmpty()) {
+                        val anyDecrypted = remoteDocs.any { it.metadata != null }
+                        Log.d(TAG, "performSync: wrong-passphrase check anyDecrypted=$anyDecrypted (of ${remoteDocs.size} docs)")
+                        if (!anyDecrypted) {
+                            Log.w(TAG, "performSync: wrong passphrase - all metadata decryption failed")
+                            _syncState.value = SyncState.Error("Wrong passphrase. Sync disabled until corrected.")
+                            throw SyncAborted()
+                        }
+                    }
+
+                    if (!remoteEncrypted && passphraseSet) {
+                        Log.w(TAG, "performSync: remote not encrypted but passphrase set — remoteEncrypted may be stale false; synthesizing ReEncrypt anyway")
+                        synthesizeReEncryptPass()
+                    }
 
                     val excludeIds = localDocs.filter { it.syncExclude || remoteDocs.any { r -> r.docId == it.id && r.isDeleted } }.map { it.id }.toSet()
 
@@ -164,7 +198,7 @@ class SyncManager @Inject constructor(
                         val treeUri = localDriveIndex.getRootTreeUri()
                         if (treeUri.isNotBlank()) {
                             try {
-                                val missing = downloadEngine.checkFiles(treeUri, local.id, local)
+                                val missing = downloadEngine.checkFiles(treeUri, local.id, local, remoteCache)
                                 if (missing.isNotEmpty()) {
                                     Log.d(TAG, "performSync: doc=${local.id} missing=$missing re-uploading")
                                     uploadEngine.uploadDocument(local)
@@ -177,13 +211,17 @@ class SyncManager @Inject constructor(
 
                     documentRepository.notifyDocumentsChanged()
 
-                    deviceRegistry.detectOrphans(localDocs, remoteDocs)
+                    deviceRegistry.detectOrphans(localDocs, remoteDocs, remoteCache)
+
+                    deviceRegistry.syncRegistryToDrive(passphraseSet)
 
                     retryHandler.onSuccess()
                 }
             }
             _syncState.value = SyncState.Idle
             Log.d(TAG, "performSync: complete")
+        } catch (_: SyncAborted) {
+            // state already set by gating code, fall through
         } catch (e: TimeoutCancellationException) {
             retryHandler.onFailure()
             _syncState.value = SyncState.Error("Sync timed out")
@@ -198,34 +236,31 @@ class SyncManager @Inject constructor(
         }
     }
 
-    fun synthesizeReEncryptPass() {
-        val index = localDriveIndex
-        val allDocIds = index.getAllTrackedDocumentIds()
-        for (docId in allDocIds) {
-            journal.append(JournalEntry.ReEncrypt(docId))
+    suspend fun synthesizeReEncryptPass() {
+        val docs = documentStore.listDocuments().getOrDefault(emptyList())
+        for (doc in docs) {
+            journal.append(JournalEntry.ReEncrypt(doc.id))
         }
     }
 
     private suspend fun processJournalEntries() {
         for (entry in journal.entriesFromCheckpoint()) {
             try {
-                when (entry) {
-                    is JournalEntry.AddPage -> uploadEngine.uploadPage(entry.docId, entry.pageNumber)
-                    is JournalEntry.RemovePage -> uploadEngine.deletePage(entry.docId, entry.pageNumber)
-                    is JournalEntry.ReplacePageImage -> uploadEngine.replacePageImage(entry.docId, entry.pageNumber)
-                    is JournalEntry.ReorderPages -> uploadEngine.updateMetadata(entry.docId)
-                    is JournalEntry.UpdateDocumentName -> uploadEngine.updateMetadata(entry.docId)
-                    is JournalEntry.UpdatePageOcr -> uploadEngine.updateMetadata(entry.docId)
-                    is JournalEntry.ReplacePages -> uploadEngine.replacePages(entry.docId, entry.keptFilenames).getOrNull()
-                    is JournalEntry.ReEncrypt -> uploadEngine.reEncryptDocument(entry.docId)
+                val ok = when (entry) {
+                    is JournalEntry.AddPage -> uploadEngine.uploadPage(entry.docId, entry.pageNumber).isSuccess
+                    is JournalEntry.RemovePage -> uploadEngine.deletePage(entry.docId, entry.pageNumber).isSuccess
+                    is JournalEntry.ReplacePageImage -> uploadEngine.replacePageImage(entry.docId, entry.pageNumber).isSuccess
+                    is JournalEntry.ReorderPages -> uploadEngine.updateMetadata(entry.docId).isSuccess
+                    is JournalEntry.UpdateDocumentName -> uploadEngine.updateMetadata(entry.docId).isSuccess
+                    is JournalEntry.UpdatePageOcr -> uploadEngine.updateMetadata(entry.docId).isSuccess
+                    is JournalEntry.ReplacePages -> uploadEngine.replacePages(entry.docId, entry.keptFilenames).isSuccess
+                    is JournalEntry.ReEncrypt -> uploadEngine.reEncryptDocument(entry.docId).isSuccess
+                }
+                if (ok) {
+                    journal.advanceCheckpoint()
                 }
             } catch (_: Exception) {
-                // continue processing remaining entries
-            }
-            try {
-                journal.advanceCheckpoint()
-            } catch (_: Exception) {
-                Log.w(TAG, "processJournalEntries: advanceCheckpoint failed")
+                // don't advance — will retry on next sync
             }
         }
         try {
@@ -270,3 +305,5 @@ class SyncManager @Inject constructor(
         private const val TAG = "SyncManager"
     }
 }
+
+private class SyncAborted : Exception()

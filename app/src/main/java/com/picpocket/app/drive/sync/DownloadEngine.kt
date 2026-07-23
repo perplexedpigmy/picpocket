@@ -1,6 +1,7 @@
 package com.picpocket.app.drive.sync
 
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
 import kotlinx.serialization.json.Json
@@ -25,18 +26,20 @@ class DownloadEngine @Inject constructor(
         val isDeleted: Boolean,
     )
 
-    suspend fun listRemoteDocuments(): List<RemoteDocument> {
+    suspend fun listRemoteDocuments(
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): List<RemoteDocument> {
         val treeUri = localDriveIndex.getRootTreeUri()
         if (treeUri.isBlank()) { Log.e(TAG, "listRemoteDocuments: treeUri blank"); return emptyList() }
 
         val docIds = driveFileManager.listDocFolders(treeUri)
         Log.d(TAG, "listRemoteDocuments: docIds=${docIds.toList()}")
         return docIds.mapNotNull { docId ->
-            val fileNames = driveFileManager.listFileNames(treeUri, docId)
+            val fileNames = driveFileManager.listFileNames(treeUri, docId, remoteCache)
             Log.d(TAG, "listRemoteDocuments: docId=$docId fileNames=$fileNames")
             val hasDeleted = ".deleted" in fileNames
             val metadata = if ("metadata.json" in fileNames && !hasDeleted) {
-                val data = driveFileManager.readMetadataJson(treeUri, docId)
+                val data = driveFileManager.readMetadataJson(treeUri, docId, remoteCache)
                 Log.d(TAG, "listRemoteDocuments: docId=$docId metadata=${data?.size} bytes")
                 if (data != null) {
                     try {
@@ -57,16 +60,25 @@ class DownloadEngine @Inject constructor(
         }
     }
 
-    suspend fun downloadFile(treeUri: String, docId: String, fileName: String): ByteArray? {
-        return driveFileManager.readFile(treeUri, docId, fileName)
+    suspend fun downloadFile(
+        treeUri: String, docId: String, fileName: String,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): ByteArray? {
+        return driveFileManager.readFile(treeUri, docId, fileName, remoteCache)
     }
 
-    suspend fun downloadTombstone(treeUri: String, docId: String): ByteArray? {
-        return driveFileManager.readFile(treeUri, docId, ".deleted")
+    suspend fun downloadTombstone(
+        treeUri: String, docId: String,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): ByteArray? {
+        return driveFileManager.readFile(treeUri, docId, ".deleted", remoteCache)
     }
 
-    suspend fun checkFiles(treeUri: String, docId: String, doc: StoredDocument): List<String> {
-        val remoteNames = driveFileManager.listFileNames(treeUri, docId).toSet()
+    suspend fun checkFiles(
+        treeUri: String, docId: String, doc: StoredDocument,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): List<String> {
+        val remoteNames = driveFileManager.listFileNames(treeUri, docId, remoteCache).toSet()
         return doc.pages
             .map { it.filename }
             .filter { it !in remoteNames } +

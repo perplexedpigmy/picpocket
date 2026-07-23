@@ -63,6 +63,7 @@ class SyncViewModelTest {
         every { deviceRegistry.getOthersDeleted() } returns emptyList()
         every { driveAuthManager.signInIntent } returns android.content.Intent()
         every { passphraseStore.getPassphrase() } returns null
+        coEvery { syncManager.synthesizeReEncryptPass() } returns Unit
 
         viewModel = SyncViewModel(
             app,
@@ -204,5 +205,29 @@ class SyncViewModelTest {
     fun `dismissAction resets action state to Idle`() {
         viewModel.dismissAction()
         assertEquals(SyncActionState.Idle, viewModel.actionState.value)
+    }
+
+    @Test
+    fun `setEncryptionPassphrase does nothing when syncing`() {
+        every { syncManager.syncState } returns MutableStateFlow(SyncState.Syncing)
+        viewModel.verifyConnection()
+        viewModel.setEncryptionPassphrase("new-passphrase")
+        coVerify(inverse = true) { syncManager.performSync() }
+    }
+
+    @Test
+    fun `disableEncryption does nothing when syncing`() {
+        every { syncManager.syncState } returns MutableStateFlow(SyncState.Syncing)
+        viewModel.verifyConnection()
+        viewModel.disableEncryption()
+        coVerify(inverse = true) { syncManager.performSync() }
+    }
+
+    @Test
+    fun `disableEncryption calls performSync when not syncing`() = runTest {
+        coEvery { syncManager.performSync() } returns Unit
+        viewModel.disableEncryption()
+        advanceUntilIdle()
+        coVerify { syncManager.performSync() }
     }
 }

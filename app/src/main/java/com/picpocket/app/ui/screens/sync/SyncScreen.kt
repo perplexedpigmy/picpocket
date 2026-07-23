@@ -33,6 +33,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -70,6 +72,12 @@ fun SyncScreen(
         viewModel.handleSignInResult(result)
     }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    val syncError = (state.syncState as? SyncState.Error)?.message
+    LaunchedEffect(syncError) {
+        syncError?.let { snackbarHostState.showSnackbar(it) }
+    }
+
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri ->
@@ -77,6 +85,7 @@ fun SyncScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Sync") },
@@ -201,6 +210,7 @@ fun SyncScreen(
                         Column(modifier = Modifier.padding(16.dp)) {
                             EncryptionSection(
                                 encryptionEnabled = state.encryptionEnabled,
+                                isSyncing = state.syncState is SyncState.Syncing,
                                 onEnableEncryption = { viewModel.setEncryptionPassphrase(it) },
                                 onDisableEncryption = { viewModel.disableEncryption() },
                                 onChangePassphrase = { viewModel.setEncryptionPassphrase(it) },
@@ -324,6 +334,7 @@ fun SyncScreen(
 @Composable
 private fun EncryptionSection(
     encryptionEnabled: Boolean,
+    isSyncing: Boolean,
     onEnableEncryption: (String) -> Unit,
     onDisableEncryption: () -> Unit,
     onChangePassphrase: (String) -> Unit,
@@ -441,16 +452,16 @@ private fun EncryptionSection(
     Spacer(Modifier.height(8.dp))
     if (encryptionEnabled) {
         Row {
-            OutlinedButton(onClick = { showPassphraseDialog = true }) {
+            OutlinedButton(onClick = { showPassphraseDialog = true }, enabled = !isSyncing) {
                 Text("Change Passphrase")
             }
             Spacer(Modifier.width(8.dp))
-            OutlinedButton(onClick = { showDisableConfirm = true }) {
+            OutlinedButton(onClick = { showDisableConfirm = true }, enabled = !isSyncing) {
                 Text("Disable")
             }
         }
     } else {
-        OutlinedButton(onClick = { showPassphraseDialog = true }) {
+        OutlinedButton(onClick = { showPassphraseDialog = true }, enabled = !isSyncing) {
             Text("Enable Encryption")
         }
     }

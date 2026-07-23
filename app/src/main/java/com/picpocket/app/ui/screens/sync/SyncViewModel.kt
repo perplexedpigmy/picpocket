@@ -112,18 +112,23 @@ class SyncViewModel @Inject constructor(
     }
 
     fun setEncryptionPassphrase(passphrase: String) {
+        if (syncManager.syncState.value is SyncState.Syncing) return
         encryptionManager.setPassphrase(passphrase)
         passphraseStore.savePassphrase(passphrase)
-        syncManager.synthesizeReEncryptPass()
-        viewModelScope.launch { syncManager.performSync() }
+        viewModelScope.launch {
+            syncManager.performSync()
+        }
         _uiState.update { it.copy(encryptionEnabled = true) }
     }
 
     fun disableEncryption() {
+        if (syncManager.syncState.value is SyncState.Syncing) return
         encryptionManager.clearPassphrase()
         passphraseStore.clearPassphrase()
-        syncManager.synthesizeReEncryptPass()
-        viewModelScope.launch { syncManager.performSync() }
+        viewModelScope.launch {
+            syncManager.synthesizeReEncryptPass()
+            syncManager.performSync()
+        }
         _uiState.update { it.copy(encryptionEnabled = false) }
     }
 

@@ -122,17 +122,18 @@ class UploadEngine @Inject constructor(
         for (page in doc.pages) {
             val pageFile = documentStore.pageFile(docId, page.filename)
             if (pageFile.exists() == true) {
-                uploadSinglePage(docId, page.filename, pageFile.readBytes())
+                if (!uploadSinglePage(docId, page.filename, pageFile.readBytes())) {
+                    return Result.failure(Exception("Failed to upload page ${page.filename}"))
+                }
             }
         }
 
-        val updatedDoc = doc.copy(syncVersion = doc.syncVersion + 1)
-        val metadataBytes = json.encodeToString(updatedDoc).toByteArray(Charsets.UTF_8)
-        uploadMetadataBytes(docId, metadataBytes)
+        val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
+        if (!uploadMetadataBytes(docId, metadataBytes)) {
+            return Result.failure(Exception("Failed to upload metadata for $docId"))
+        }
 
-        val info = localDriveIndex.getDocumentInfo(docId)
-        info.syncVersion = updatedDoc.syncVersion
-        localDriveIndex.setDocumentInfo(docId, info)
+        documentStore.writeMetadata(docId, doc)
         return Result.success(Unit)
     }
 

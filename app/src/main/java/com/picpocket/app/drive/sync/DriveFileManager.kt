@@ -9,6 +9,7 @@ import com.picpocket.app.drive.EncryptionManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import javax.crypto.AEADBadTagException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -64,7 +65,27 @@ class DriveFileManager @Inject constructor(
         }
     }
 
-    suspend fun listFileNames(treeUri: String, docId: String): List<String> = withContext(Dispatchers.IO) {
+    suspend fun prefetchRemoteFiles(treeUri: String): Map<String, List<DocumentFile>> = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyMap()
+        try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Exception) { }
+        root.listFiles()
+            .filter { it.isDirectory }
+            .mapNotNull { folder ->
+                val name = folder.name ?: return@mapNotNull null
+                try { context.contentResolver.refresh(folder.uri, null, null) } catch (_: Exception) { }
+                name to folder.listFiles().toList()
+            }
+            .toMap()
+    }
+
+    suspend fun listFileNames(
+        treeUri: String, docId: String,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): List<String> = withContext(Dispatchers.IO) {
+        val cached = remoteCache?.get(docId)
+        if (cached != null) {
+            return@withContext cached.filter { !it.isDirectory }.mapNotNull { it.name }
+        }
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
         if (root == null) { Log.w(TAG, "listFileNames: root null for $docId"); return@withContext emptyList() }
         val folder = root.findFile(docId)
@@ -82,7 +103,18 @@ class DriveFileManager @Inject constructor(
         names
     }
 
-    suspend fun readFile(treeUri: String, docId: String, fileName: String): ByteArray? = withContext(Dispatchers.IO) {
+    suspend fun readFile(
+        treeUri: String, docId: String, fileName: String,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val cached = remoteCache?.get(docId)
+        if (cached != null) {
+            val file = cached.find { it.name == fileName && !it.isDirectory }
+            if (file == null) { Log.w(TAG, "readFile: file not found (cache) for $docId/$fileName"); return@withContext null }
+            val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+            if (encrypted == null) { Log.w(TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
+            return@withContext try { encryptionManager.decrypt(encrypted) } catch (_: AEADBadTagException) { encrypted }
+        }
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
         if (root == null) { Log.w(TAG, "readFile: root null for $docId/$fileName"); return@withContext null }
         val folder = root.findFile(docId)
@@ -91,7 +123,11 @@ class DriveFileManager @Inject constructor(
         if (file == null) { Log.w(TAG, "readFile: file not found for $docId/$fileName"); return@withContext null }
         val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
         if (encrypted == null) { Log.w(TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
-        encryptionManager.decrypt(encrypted)
+        try {
+            encryptionManager.decrypt(encrypted)
+        } catch (_: AEADBadTagException) {
+            encrypted
+        }
     }
 
     suspend fun writeFile(treeUri: String, docId: String, fileName: String, data: ByteArray, mimeType: String = "application/octet-stream"): Boolean = withContext(Dispatchers.IO) {
@@ -99,9 +135,13 @@ class DriveFileManager @Inject constructor(
         val encrypted = encryptionManager.encrypt(data)
         val folder = root.findFile(docId)
         val docFolder = folder ?: root.createDirectory(docId) ?: return@withContext false
-        val existing = docFolder.findFile(fileName)
-        if (existing != null) {
-            existing.delete()
+        try {
+            context.contentResolver.refresh(docFolder.uri, null, null)
+        } catch (_: Exception) { }
+        for (child in docFolder.listFiles()) {
+            if (child.name == fileName) {
+                child.delete()
+            }
         }
         val newFile = docFolder.createFile(mimeType, fileName) ?: return@withContext false
         context.contentResolver.openOutputStream(newFile.uri)?.use { it.write(encrypted) } ?: return@withContext false
@@ -111,23 +151,32 @@ class DriveFileManager @Inject constructor(
     suspend fun deleteFileByName(treeUri: String, docId: String, fileName: String): Boolean = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
         val folder = root.findFile(docId) ?: return@withContext false
-        val file = folder.findFile(fileName) ?: return@withContext false
-        file.delete()
+        try {
+            context.contentResolver.refresh(folder.uri, null, null)
+        } catch (_: Exception) { }
+        for (child in folder.listFiles()) {
+            if (child.name == fileName) {
+                return@withContext child.delete()
+            }
+        }
+        false
     }
 
     suspend fun createDocFolder(treeUri: String, docId: String): Boolean = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
-        val existing = root.findFile(docId)
-        if (existing != null && existing.isDirectory) return@withContext true
-        if (existing == null) {
-            root.createDirectory(docId) != null
-        } else {
-            existing.delete()
-            root.createDirectory(docId) != null
+        try {
+            context.contentResolver.refresh(root.uri, null, null)
+        } catch (_: Exception) { }
+        for (child in root.listFiles()) {
+            if (child.name == docId && child.isDirectory) return@withContext true
         }
+        root.createDirectory(docId) != null
     }
 
-    suspend fun readMetadataJson(treeUri: String, docId: String): ByteArray? = withContext(Dispatchers.IO) {
-        readFile(treeUri, docId, "metadata.json")
+    suspend fun readMetadataJson(
+        treeUri: String, docId: String,
+        remoteCache: Map<String, List<DocumentFile>>? = null,
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        readFile(treeUri, docId, "metadata.json", remoteCache)
     }
 }

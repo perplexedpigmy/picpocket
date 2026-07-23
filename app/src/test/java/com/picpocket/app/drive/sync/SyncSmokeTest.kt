@@ -1,5 +1,6 @@
 package com.picpocket.app.drive.sync
 
+import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.SyncState
@@ -34,6 +35,8 @@ class SyncSmokeTest {
     private val defaultSyncScheduler = mockk<DefaultSyncScheduler>()
     private val conflictResolver = mockk<ConflictResolver>()
     private val deviceRegistry = mockk<DeviceRegistry>()
+    private val driveFileManager = mockk<DriveFileManager>()
+    private val encryptionManager = mockk<EncryptionManager>()
     private val retryHandler = mockk<RetryHandler>()
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<android.content.Context>()
@@ -61,10 +64,13 @@ class SyncSmokeTest {
         coEvery { retryHandler.onFailure() } returns Unit
         coEvery { conflictResolver.detectConflicts(any(), any()) } returns Unit
         every { conflictResolver.getActiveConflicts() } returns emptyList()
-        coEvery { deviceRegistry.detectOrphans(any(), any()) } returns Unit
+        coEvery { deviceRegistry.detectOrphans(any(), any(), any()) } returns Unit
         every { documentRepository.notifyDocumentsChanged() } returns Unit
         coEvery { deviceRegistry.syncRegistryFromDrive() } returns Unit
-        coEvery { deviceRegistry.syncRegistryToDrive() } returns Unit
+        every { deviceRegistry.remoteEncrypted } returns false
+        every { encryptionManager.isEncryptionEnabled } returns false
+        coEvery { deviceRegistry.syncRegistryToDrive(any<Boolean>()) } returns Unit
+        coEvery { driveFileManager.prefetchRemoteFiles(any()) } returns emptyMap()
         coEvery { syncMutex.initialize() } returns Unit
         coEvery { syncMutex.acquire() } returns true
         coEvery { syncMutex.release() } returns Unit
@@ -79,7 +85,9 @@ class SyncSmokeTest {
             driveConnectivityChecker,
             defaultSyncScheduler,
             conflictResolver,
+            driveFileManager,
             deviceRegistry,
+            encryptionManager,
             retryHandler,
             syncSettings,
             journal,
@@ -91,9 +99,9 @@ class SyncSmokeTest {
     @Test
     fun `sync setup works end to end`() = runTest {
         coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
-        coEvery { downloadEngine.listRemoteDocuments() } returns emptyList()
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
         coEvery { conflictResolver.detectConflicts(emptyList(), emptyList()) } returns Unit
-        coEvery { deviceRegistry.detectOrphans(emptyList(), emptyList()) } returns Unit
+        coEvery { deviceRegistry.detectOrphans(emptyList(), emptyList(), any()) } returns Unit
 
         syncManager.performSync()
 

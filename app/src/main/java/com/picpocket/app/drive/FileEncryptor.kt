@@ -16,6 +16,6 @@ class FileEncryptor @Inject constructor(
     }
 
     fun isEncrypted(data: ByteArray): Boolean {
-        return data.size > 12 && encryptionManager.isEncryptionEnabled
+        return encryptionManager.isEncrypted(data)
     }
 }
