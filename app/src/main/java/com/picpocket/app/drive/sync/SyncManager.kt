@@ -5,7 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.Settings
-import android.util.Log
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 import com.picpocket.app.data.repository.DocumentRepository
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.drive.DriveAuthManager
@@ -77,39 +78,39 @@ class SyncManager @Inject constructor(
     }
 
     suspend fun performSync() {
-        if (!syncSettings.syncEnabled) { Log.d(TAG, "performSync: sync disabled"); return }
+        if (!syncSettings.syncEnabled) { Tracing.d(Category.DRIVE_API, TAG, "performSync: sync disabled"); return }
         val authState = driveAuthManager.authState.value
-        if (authState !is DriveAuthState.Connected) { Log.d(TAG, "performSync: not connected (${authState::class.simpleName})"); return }
-        if (!driveConnectivityChecker.isNetworkAvailable()) { Log.d(TAG, "performSync: no network"); return }
-        if (isSyncing) { Log.d(TAG, "performSync: already syncing"); return }
-        if (!localDriveIndex.hasValidFolder()) { Log.d(TAG, "performSync: no folder configured"); _syncState.value = SyncState.Error("No folder configured"); return }
+        if (authState !is DriveAuthState.Connected) { Tracing.d(Category.DRIVE_API, TAG, "performSync: not connected (${authState::class.simpleName})"); return }
+        if (!driveConnectivityChecker.isNetworkAvailable()) { Tracing.d(Category.DRIVE_API, TAG, "performSync: no network"); return }
+        if (isSyncing) { Tracing.d(Category.DRIVE_API, TAG, "performSync: already syncing"); return }
+        if (!localDriveIndex.hasValidFolder()) { Tracing.d(Category.DRIVE_API, TAG, "performSync: no folder configured"); _syncState.value = SyncState.Error("No folder configured"); return }
 
-        Log.d(TAG, "performSync: starting rootFolderId='${localDriveIndex.getRootFolderId()}'")
+        Tracing.d(Category.DRIVE_API, TAG, "performSync: starting rootFolderId='${localDriveIndex.getRootFolderId()}'")
         isSyncing = true
         _syncState.value = SyncState.Syncing
         try {
             syncMutex.initialize()
             if (!syncMutex.acquire()) {
-                Log.d(TAG, "performSync: mutex locked by another device")
+                Tracing.d(Category.DRIVE_API, TAG, "performSync: mutex locked by another device")
                 _syncState.value = SyncState.Idle
                 return
             }
             withContext(Dispatchers.IO) {
                 withTimeout(30_000L) {
                     retryHandler.waitBeforeRetry()
-                    Log.d(TAG, "performSync: waitBeforeRetry done")
+                    Tracing.d(Category.DRIVE_API, TAG, "performSync: waitBeforeRetry done")
 
                     val localDocs = documentStore.listDocuments().getOrDefault(emptyList())
-                    Log.d(TAG, "performSync: localDocs count=${localDocs.size}")
+                    Tracing.d(Category.STORE_STATE, TAG, "performSync: localDocs count=${localDocs.size}")
 
                     refreshSafCache()
 
-                    Log.d(TAG, "performSync: prefetching remote file tree...")
+                    Tracing.d(Category.DRIVE_FILES, TAG, "performSync: prefetching remote file tree...")
                     val remoteCache = driveFileManager.prefetchRemoteFiles(
                         localDriveIndex.getRootTreeUri()
                     )
 
-                    Log.d(TAG, "performSync: listing remote docs...")
+                    Tracing.d(Category.DRIVE_FILES, TAG, "performSync: listing remote docs...")
                     val remoteDocs = downloadEngine.listRemoteDocuments(remoteCache)
 
                     deviceRegistry.syncRegistryFromDrive()
@@ -118,26 +119,26 @@ class SyncManager @Inject constructor(
                     val passphraseSet = encryptionManager.isEncryptionEnabled
                     val hasReEncryptEntries = journal.entriesFromCheckpoint().any { it is JournalEntry.ReEncrypt }
 
-                    Log.d(TAG, "performSync: gating remoteEncrypted=$remoteEncrypted passphraseSet=$passphraseSet remoteDocsSize=${remoteDocs.size} hasReEncryptEntries=$hasReEncryptEntries")
+                    Tracing.d(Category.DRIVE_API, TAG, "performSync: gating remoteEncrypted=$remoteEncrypted passphraseSet=$passphraseSet remoteDocsSize=${remoteDocs.size} hasReEncryptEntries=$hasReEncryptEntries")
 
                     if (remoteEncrypted && !passphraseSet && !hasReEncryptEntries) {
-                        Log.w(TAG, "performSync: Drive encrypted, passphrase required")
+                        Tracing.w(Category.DRIVE_API, TAG, "performSync: Drive encrypted, passphrase required")
                         _syncState.value = SyncState.Error("This Drive is encrypted. Enter your passphrase to sync.")
                         throw SyncAborted()
                     }
 
                     if (remoteEncrypted && passphraseSet && remoteDocs.isNotEmpty()) {
                         val anyDecrypted = remoteDocs.any { it.metadata != null }
-                        Log.d(TAG, "performSync: wrong-passphrase check anyDecrypted=$anyDecrypted (of ${remoteDocs.size} docs)")
+                        Tracing.d(Category.DRIVE_API, TAG, "performSync: wrong-passphrase check anyDecrypted=$anyDecrypted (of ${remoteDocs.size} docs)")
                         if (!anyDecrypted) {
-                            Log.w(TAG, "performSync: wrong passphrase - all metadata decryption failed")
+                            Tracing.w(Category.DRIVE_API, TAG, "performSync: wrong passphrase - all metadata decryption failed")
                             _syncState.value = SyncState.Error("Wrong passphrase. Sync disabled until corrected.")
                             throw SyncAborted()
                         }
                     }
 
                     if (!remoteEncrypted && passphraseSet) {
-                        Log.w(TAG, "performSync: remote not encrypted but passphrase set — remoteEncrypted may be stale false; synthesizing ReEncrypt anyway")
+                        Tracing.w(Category.DRIVE_API, TAG, "performSync: remote not encrypted but passphrase set — remoteEncrypted may be stale false; synthesizing ReEncrypt anyway")
                         synthesizeReEncryptPass()
                     }
 
@@ -159,15 +160,15 @@ class SyncManager @Inject constructor(
                             else -> null
                         }
                         if (matched != null) {
-                            Log.d(TAG, "performSync: doc=${doc.id} uploading via $matched")
+                            Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${doc.id} uploading via $matched")
                             try {
                                 val ok = uploadEngine.uploadDocument(doc)
-                                if (!ok) Log.w(TAG, "performSync: uploadDocument returned false for doc=${doc.id}")
+                                if (!ok) Tracing.w(Category.DRIVE_FILES, TAG, "performSync: uploadDocument returned false for doc=${doc.id}")
                             } catch (e: Exception) {
-                                Log.e(TAG, "performSync: uploadDocument threw for doc=${doc.id}: ${e.message}")
+                                Tracing.e(Category.DRIVE_FILES, TAG, "performSync: uploadDocument threw for doc=${doc.id}: ${e.message}")
                             }
                         } else {
-                            Log.d(TAG, "performSync: doc=${doc.id} skipped (remote=${remote != null} syncVer=${doc.syncVersion} journalEmpty=${journal.isEmpty()})")
+                            Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${doc.id} skipped (remote=${remote != null} syncVer=${doc.syncVersion} journalEmpty=${journal.isEmpty()})")
                         }
                     }
 
@@ -187,7 +188,7 @@ class SyncManager @Inject constructor(
                         val local = localDocs.find { it.id == remote.docId }
                         if (local == null) continue
                         if (remote.metadata.syncVersion > local.syncVersion) {
-                            Log.d(TAG, "performSync: doc=${remote.docId} remote v${remote.metadata.syncVersion} > local v${local.syncVersion} downloading update")
+                            Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${remote.docId} remote v${remote.metadata.syncVersion} > local v${local.syncVersion} downloading update")
                             downloadFullDocument(remote)
                         }
                     }
@@ -200,11 +201,11 @@ class SyncManager @Inject constructor(
                             try {
                                 val missing = downloadEngine.checkFiles(treeUri, local.id, local, remoteCache)
                                 if (missing.isNotEmpty()) {
-                                    Log.d(TAG, "performSync: doc=${local.id} missing=$missing re-uploading")
+                                    Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${local.id} missing=$missing re-uploading")
                                     uploadEngine.uploadDocument(local)
                                 }
                             } catch (e: Exception) {
-                                Log.w(TAG, "performSync: checkFiles threw for doc=${local.id}: ${e.message}")
+                                Tracing.w(Category.DRIVE_FILES, TAG, "performSync: checkFiles threw for doc=${local.id}: ${e.message}")
                             }
                         }
                     }
@@ -219,17 +220,17 @@ class SyncManager @Inject constructor(
                 }
             }
             _syncState.value = SyncState.Idle
-            Log.d(TAG, "performSync: complete")
+            Tracing.d(Category.DRIVE_API, TAG, "performSync: complete")
         } catch (_: SyncAborted) {
             // state already set by gating code, fall through
         } catch (e: TimeoutCancellationException) {
             retryHandler.onFailure()
             _syncState.value = SyncState.Error("Sync timed out")
-            Log.d(TAG, "performSync: timed out")
+            Tracing.d(Category.DRIVE_API, TAG, "performSync: timed out")
         } catch (e: Exception) {
             retryHandler.onFailure()
             _syncState.value = SyncState.Error(e.message ?: "Sync failed")
-            Log.d(TAG, "performSync: error ${e.message}")
+            Tracing.d(Category.DRIVE_API, TAG, "performSync: error ${e.message}")
         } finally {
             syncMutex.release()
             isSyncing = false
@@ -266,7 +267,7 @@ class SyncManager @Inject constructor(
         try {
             journal.truncate()
         } catch (_: Exception) {
-            Log.w(TAG, "processJournalEntries: truncate failed")
+            Tracing.w(Category.STORE_STATE, TAG, "processJournalEntries: truncate failed")
         }
     }
 
@@ -297,7 +298,7 @@ class SyncManager @Inject constructor(
             val docUri = DocumentsContract.buildDocumentUriUsingTree(uri, docId)
             resolver.refresh(docUri, null, null)
         } catch (e: Throwable) {
-            Log.w(TAG, "refreshSafCache: failed ${e.message}")
+            Tracing.w(Category.DRIVE_FILES, TAG, "refreshSafCache: failed ${e.message}")
         }
     }
 

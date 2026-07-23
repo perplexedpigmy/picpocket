@@ -34,7 +34,7 @@ A document scanner for Android that auto-detects document bounds, captures multi
 
 ```bash
 # Clone
-git clone https://github.com/zunftw/picpocket.git
+git clone https://github.com/perplexedpigmy/picpocket.git
 cd picpocket
 
 # Create local.properties
@@ -51,7 +51,7 @@ The project uses the standard Android Gradle plugin. No special setup is require
 
 ```bash
 ./gradlew assembleDebug          # Build debug APK
-./gradlew testDebug              # Run unit tests (108+ tests)
+./gradlew testDebug              # Run unit tests (292+ tests)
 ./gradlew assembleRelease        # Build release APK (requires signing config)
 ```
 

@@ -3,7 +3,8 @@ package com.picpocket.app.drive.sync
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
-import android.util.Log
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.drive.EncryptionManager
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -24,31 +25,31 @@ class DriveFileManager @Inject constructor(
             val uri = Uri.parse(treeUri)
             val docId = extractDocumentId(uri)
             val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(uri, docId)
-            Log.d(TAG, "listDocFolders: childrenUri=$childrenUri")
+            Tracing.d(Category.DRIVE_FILES, TAG, "listDocFolders: childrenUri=$childrenUri")
             val cursor = context.contentResolver.query(
                 childrenUri, null, null, null, null,
             )
             if (cursor == null) {
-                Log.w(TAG, "listDocFolders: cursor null")
+                Tracing.w(Category.DRIVE_FILES, TAG, "listDocFolders: cursor null")
                 return@withContext emptyList()
             }
             val nameIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
             val mimeIdx = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
-            Log.d(TAG, "listDocFolders: nameIdx=$nameIdx mimeIdx=$mimeIdx rowCount=${cursor.count}")
+            Tracing.d(Category.DRIVE_FILES, TAG, "listDocFolders: nameIdx=$nameIdx mimeIdx=$mimeIdx rowCount=${cursor.count}")
             val names = mutableListOf<String>()
             while (cursor.moveToNext()) {
                 val name = if (nameIdx >= 0) cursor.getString(nameIdx) else "?"
                 val mime = if (mimeIdx >= 0) cursor.getString(mimeIdx) else "?"
-                Log.d(TAG, "listDocFolders: name=$name mime=$mime")
+                Tracing.d(Category.DRIVE_FILES, TAG, "listDocFolders: name=$name mime=$mime")
                 if (DocumentsContract.Document.MIME_TYPE_DIR == mime) {
                     names.add(name)
                 }
             }
             cursor.close()
-            Log.d(TAG, "listDocFolders: found ${names.size} folders: $names")
+            Tracing.d(Category.DRIVE_FILES, TAG, "listDocFolders: found ${names.size} folders: $names")
             names
         } catch (e: Exception) {
-            Log.e(TAG, "listDocFolders: exception=${e.message}", e)
+            Tracing.e(Category.DRIVE_FILES, TAG, "listDocFolders: exception=${e.message}", e)
             emptyList()
         }
     }
@@ -87,19 +88,19 @@ class DriveFileManager @Inject constructor(
             return@withContext cached.filter { !it.isDirectory }.mapNotNull { it.name }
         }
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
-        if (root == null) { Log.w(TAG, "listFileNames: root null for $docId"); return@withContext emptyList() }
+        if (root == null) { Tracing.w(Category.DRIVE_FILES, TAG, "listFileNames: root null for $docId"); return@withContext emptyList() }
         val folder = root.findFile(docId)
-        if (folder == null) { Log.w(TAG, "listFileNames: folder not found for docId=$docId"); return@withContext emptyList() }
+        if (folder == null) { Tracing.w(Category.DRIVE_FILES, TAG, "listFileNames: folder not found for docId=$docId"); return@withContext emptyList() }
         try {
             context.contentResolver.refresh(folder.uri, null, null)
         } catch (_: Exception) { }
         val rawFiles = folder.listFiles()
-        Log.d(TAG, "listFileNames: docId=$docId rawCount=${rawFiles.size} total")
+        Tracing.d(Category.DRIVE_FILES, TAG, "listFileNames: docId=$docId rawCount=${rawFiles.size} total")
         for (f in rawFiles) {
-            Log.d(TAG, "listFileNames:   entry name=${f.name} dir=${f.isDirectory} uri=${f.uri}")
+            Tracing.d(Category.DRIVE_FILES, TAG, "listFileNames:   entry name=${f.name} dir=${f.isDirectory} uri=${f.uri}")
         }
         val names = rawFiles.filter { !it.isDirectory }.mapNotNull { it.name }
-        Log.d(TAG, "listFileNames: docId=$docId filtered=${names.toList()}")
+        Tracing.d(Category.DRIVE_FILES, TAG, "listFileNames: docId=$docId filtered=${names.toList()}")
         names
     }
 
@@ -110,19 +111,19 @@ class DriveFileManager @Inject constructor(
         val cached = remoteCache?.get(docId)
         if (cached != null) {
             val file = cached.find { it.name == fileName && !it.isDirectory }
-            if (file == null) { Log.w(TAG, "readFile: file not found (cache) for $docId/$fileName"); return@withContext null }
+            if (file == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: file not found (cache) for $docId/$fileName"); return@withContext null }
             val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
-            if (encrypted == null) { Log.w(TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
+            if (encrypted == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
             return@withContext try { encryptionManager.decrypt(encrypted) } catch (_: AEADBadTagException) { encrypted }
         }
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
-        if (root == null) { Log.w(TAG, "readFile: root null for $docId/$fileName"); return@withContext null }
+        if (root == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: root null for $docId/$fileName"); return@withContext null }
         val folder = root.findFile(docId)
-        if (folder == null) { Log.w(TAG, "readFile: folder not found for $docId/$fileName"); return@withContext null }
+        if (folder == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: folder not found for $docId/$fileName"); return@withContext null }
         val file = folder.findFile(fileName)
-        if (file == null) { Log.w(TAG, "readFile: file not found for $docId/$fileName"); return@withContext null }
+        if (file == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: file not found for $docId/$fileName"); return@withContext null }
         val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
-        if (encrypted == null) { Log.w(TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
+        if (encrypted == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
         try {
             encryptionManager.decrypt(encrypted)
         } catch (_: AEADBadTagException) {

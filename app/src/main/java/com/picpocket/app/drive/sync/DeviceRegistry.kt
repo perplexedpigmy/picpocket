@@ -4,7 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
@@ -162,7 +163,7 @@ class DeviceRegistry @Inject constructor(
         )
         val data = json.encodeToString(registry).toByteArray(Charsets.UTF_8)
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
-        if (root == null) { Log.w(TAG, "syncRegistryToDrive: root null"); return }
+        if (root == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryToDrive: root null"); return }
         try {
             context.contentResolver.refresh(root.uri, null, null)
         } catch (_: Exception) { }
@@ -172,7 +173,7 @@ class DeviceRegistry @Inject constructor(
             }
         }
         val created = root.createFile("application/json", REGISTRY_FILE)
-        Log.d(TAG, "syncRegistryToDrive: created=$created")
+        Tracing.d(Category.STORE_STATE, TAG, "syncRegistryToDrive: created=$created")
         if (created != null) {
             context.contentResolver.openOutputStream(created.uri)?.use { it.write(data) }
         }
@@ -182,11 +183,11 @@ class DeviceRegistry @Inject constructor(
         val treeUri = localDriveIndex.getRootTreeUri()
         if (treeUri.isBlank()) return
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
-        if (root == null) { Log.w(TAG, "syncRegistryFromDrive: root null"); return }
+        if (root == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: root null"); return }
         try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Exception) { }
         val file = root.listFiles().find { it.name == REGISTRY_FILE }
-        Log.d(TAG, "syncRegistryFromDrive: file=$file")
-        if (file == null) { Log.w(TAG, "syncRegistryFromDrive: $REGISTRY_FILE not found"); return }
+        Tracing.d(Category.STORE_STATE, TAG, "syncRegistryFromDrive: file=$file")
+        if (file == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: $REGISTRY_FILE not found"); return }
         val bytes = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() } ?: return
         val remote = try {
             json.decodeFromString<SharedDeviceRegistry>(String(bytes, Charsets.UTF_8))
@@ -203,7 +204,7 @@ class DeviceRegistry @Inject constructor(
                 )
             }
         }
-        Log.d(TAG, "syncRegistryFromDrive: imported ${remote.devices.size} device(s)")
+        Tracing.d(Category.STORE_STATE, TAG, "syncRegistryFromDrive: imported ${remote.devices.size} device(s)")
     }
 
     suspend fun cleanDrive() {

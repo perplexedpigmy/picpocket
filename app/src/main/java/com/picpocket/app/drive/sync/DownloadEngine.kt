@@ -1,6 +1,7 @@
 package com.picpocket.app.drive.sync
 
-import android.util.Log
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
@@ -30,22 +31,22 @@ class DownloadEngine @Inject constructor(
         remoteCache: Map<String, List<DocumentFile>>? = null,
     ): List<RemoteDocument> {
         val treeUri = localDriveIndex.getRootTreeUri()
-        if (treeUri.isBlank()) { Log.e(TAG, "listRemoteDocuments: treeUri blank"); return emptyList() }
+        if (treeUri.isBlank()) { Tracing.e(Category.DRIVE_API, TAG, "listRemoteDocuments: treeUri blank"); return emptyList() }
 
         val docIds = driveFileManager.listDocFolders(treeUri)
-        Log.d(TAG, "listRemoteDocuments: docIds=${docIds.toList()}")
+        Tracing.d(Category.DRIVE_FILES, TAG, "listRemoteDocuments: docIds=${docIds.toList()}")
         return docIds.mapNotNull { docId ->
             val fileNames = driveFileManager.listFileNames(treeUri, docId, remoteCache)
-            Log.d(TAG, "listRemoteDocuments: docId=$docId fileNames=$fileNames")
+            Tracing.d(Category.DRIVE_FILES, TAG, "listRemoteDocuments: docId=$docId fileNames=$fileNames")
             val hasDeleted = ".deleted" in fileNames
             val metadata = if ("metadata.json" in fileNames && !hasDeleted) {
                 val data = driveFileManager.readMetadataJson(treeUri, docId, remoteCache)
-                Log.d(TAG, "listRemoteDocuments: docId=$docId metadata=${data?.size} bytes")
+                Tracing.d(Category.DRIVE_FILES, TAG, "listRemoteDocuments: docId=$docId metadata=${data?.size} bytes")
                 if (data != null) {
                     try {
                         json.decodeFromString<StoredDocument>(String(data, Charsets.UTF_8))
                     } catch (_: Exception) {
-                        Log.w(TAG, "listRemoteDocuments: docId=$docId metadata deserialize failed")
+                        Tracing.w(Category.DRIVE_FILES, TAG, "listRemoteDocuments: docId=$docId metadata deserialize failed")
                         null
                     }
                 } else null

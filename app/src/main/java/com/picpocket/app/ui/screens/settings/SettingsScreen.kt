@@ -35,7 +35,6 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -60,6 +59,7 @@ fun SettingsScreen(
     onDonateClick: () -> Unit = {},
     onTagsClick: () -> Unit = {},
     onSyncClick: () -> Unit = {},
+    onTracingClick: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -333,6 +333,38 @@ fun SettingsScreen(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(onClick = onTracingClick),
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Label,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Tracing",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            "Configure debug tracing, dump store state",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+                Spacer(Modifier.height(16.dp))
+
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
                     .clickable(onClick = onDonateClick),
             ) {
                 Row(
@@ -370,9 +402,6 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = { viewModel.dumpDocumentDir() }) {
-                        Text("Debug: dump documents", style = MaterialTheme.typography.bodySmall)
-                    }
                 }
             }
         }

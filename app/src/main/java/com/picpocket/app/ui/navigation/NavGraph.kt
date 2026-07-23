@@ -14,6 +14,7 @@ import com.picpocket.app.ui.screens.conflicts.ConflictResolutionScreen
 import com.picpocket.app.ui.screens.deleted.DeletedDocumentsScreen
 import com.picpocket.app.ui.screens.pairing.DevicePairingScreen
 import com.picpocket.app.ui.screens.settings.SettingsScreen
+import com.picpocket.app.ui.screens.settings.TracingScreen
 import com.picpocket.app.ui.screens.sync.SyncScreen
 import com.picpocket.app.ui.screens.tags.TagManagementScreen
 import com.picpocket.app.ui.screens.viewer.PageViewerScreen
@@ -28,6 +29,7 @@ object Routes {
     const val SYNC = "sync"
     const val DONATE = "donate"
     const val TAGS = "tags"
+    const val TRACING = "tracing"
     const val CONFLICTS = "conflicts"
     const val DELETED = "deleted"
     const val PAIRING = "pairing"
@@ -107,6 +109,12 @@ fun PicPocketNavGraph(navController: NavHostController) {
                 onDonateClick = { navController.navigate(Routes.DONATE) },
                 onTagsClick = { navController.navigate(Routes.TAGS) },
                 onSyncClick = { navController.navigate(Routes.SYNC) },
+                onTracingClick = { navController.navigate(Routes.TRACING) },
+            )
+        }
+        composable(Routes.TRACING) {
+            TracingScreen(
+                onNavigateBack = { navController.popBackStack() },
             )
         }
         composable(Routes.SYNC) {
