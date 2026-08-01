@@ -9,10 +9,18 @@ import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.drive.EncryptionManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import javax.crypto.AEADBadTagException
 import javax.inject.Inject
 import javax.inject.Singleton
+
+sealed interface WriteOutcome {
+    object Verified : WriteOutcome
+    data class Failed(val reason: String) : WriteOutcome
+}
 
 @Singleton
 class DriveFileManager @Inject constructor(
@@ -54,10 +62,6 @@ class DriveFileManager @Inject constructor(
         }
     }
 
-    companion object {
-        private const val TAG = "DriveFileManager"
-    }
-
     private fun extractDocumentId(uri: Uri): String {
         return try {
             DocumentsContract.getTreeDocumentId(uri)
@@ -68,12 +72,12 @@ class DriveFileManager @Inject constructor(
 
     suspend fun prefetchRemoteFiles(treeUri: String): Map<String, List<DocumentFile>> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyMap()
-        try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Exception) { }
+        try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Throwable) { }
         root.listFiles()
             .filter { it.isDirectory }
             .mapNotNull { folder ->
                 val name = folder.name ?: return@mapNotNull null
-                try { context.contentResolver.refresh(folder.uri, null, null) } catch (_: Exception) { }
+                try { context.contentResolver.refresh(folder.uri, null, null) } catch (_: Throwable) { }
                 name to folder.listFiles().toList()
             }
             .toMap()
@@ -93,7 +97,7 @@ class DriveFileManager @Inject constructor(
         if (folder == null) { Tracing.w(Category.DRIVE_FILES, TAG, "listFileNames: folder not found for docId=$docId"); return@withContext emptyList() }
         try {
             context.contentResolver.refresh(folder.uri, null, null)
-        } catch (_: Exception) { }
+        } catch (_: Throwable) { }
         val rawFiles = folder.listFiles()
         Tracing.d(Category.DRIVE_FILES, TAG, "listFileNames: docId=$docId rawCount=${rawFiles.size} total")
         for (f in rawFiles) {
@@ -112,7 +116,7 @@ class DriveFileManager @Inject constructor(
         if (cached != null) {
             val file = cached.find { it.name == fileName && !it.isDirectory }
             if (file == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: file not found (cache) for $docId/$fileName"); return@withContext null }
-            val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+            val encrypted = readBytesGuarded(file.uri)
             if (encrypted == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
             return@withContext try { encryptionManager.decrypt(encrypted) } catch (_: AEADBadTagException) { encrypted }
         }
@@ -122,8 +126,8 @@ class DriveFileManager @Inject constructor(
         if (folder == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: folder not found for $docId/$fileName"); return@withContext null }
         val file = folder.findFile(fileName)
         if (file == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: file not found for $docId/$fileName"); return@withContext null }
-        val encrypted = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
-        if (encrypted == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: inputStream null for $docId/$fileName"); return@withContext null }
+        val encrypted = readBytesGuarded(file.uri)
+        if (encrypted == null) { Tracing.w(Category.DRIVE_FILES, TAG, "readFile: read aborted/empty for $docId/$fileName"); return@withContext null }
         try {
             encryptionManager.decrypt(encrypted)
         } catch (_: AEADBadTagException) {
@@ -131,22 +135,124 @@ class DriveFileManager @Inject constructor(
         }
     }
 
-    suspend fun writeFile(treeUri: String, docId: String, fileName: String, data: ByteArray, mimeType: String = "application/octet-stream"): Boolean = withContext(Dispatchers.IO) {
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
+    suspend fun writeFile(
+        treeUri: String, docId: String, fileName: String, data: ByteArray,
+        mimeType: String = "application/octet-stream",
+    ): WriteOutcome = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+            ?: return@withContext WriteOutcome.Failed("tree uri invalid for $docId/$fileName")
         val encrypted = encryptionManager.encrypt(data)
         val folder = root.findFile(docId)
-        val docFolder = folder ?: root.createDirectory(docId) ?: return@withContext false
+        val docFolder = folder ?: root.createDirectory(docId)
+            ?: return@withContext WriteOutcome.Failed("failed to create doc folder $docId")
         try {
             context.contentResolver.refresh(docFolder.uri, null, null)
-        } catch (_: Exception) { }
-        for (child in docFolder.listFiles()) {
-            if (child.name == fileName) {
-                child.delete()
+        } catch (_: Throwable) { }
+        try {
+            for (child in docFolder.listFiles()) {
+                if (child.name == fileName) {
+                    child.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: delete of existing $fileName failed (${e.message}), continuing best-effort for $docId")
+        }
+        val newFile = try {
+            docFolder.createFile(mimeType, fileName)
+        } catch (_: Exception) {
+            null
+        }
+        if (newFile == null) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: createFile failed for $docId/$fileName, verifying existing target")
+            return@withContext verifySettled(docFolder, fileName, encrypted.size)
+        }
+        val os = context.contentResolver.openOutputStream(newFile.uri)
+        if (os == null) {
+            return@withContext WriteOutcome.Failed("openOutputStream null for $docId/$fileName")
+        }
+        var writeFailed = false
+        try {
+            withTimeout(STALL_GUARD_MS) {
+                runInterruptible { os.write(encrypted) }
+            }
+        } catch (e: Exception) {
+            writeFailed = true
+            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: write phase aborted (${e.javaClass.simpleName}) for $docId/$fileName")
+        } finally {
+            try {
+                withTimeout(CLOSE_GUARD_MS) {
+                    runInterruptible { os.close() }
+                }
+            } catch (_: Exception) {
+                Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: close aborted for $docId/$fileName")
             }
         }
-        val newFile = docFolder.createFile(mimeType, fileName) ?: return@withContext false
-        context.contentResolver.openOutputStream(newFile.uri)?.use { it.write(encrypted) } ?: return@withContext false
-        true
+        if (writeFailed) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: write did not complete cleanly, verifying outcome for $docId/$fileName")
+        }
+        verifySettled(docFolder, fileName, encrypted.size)
+    }
+
+    private suspend fun verifySettled(docFolder: DocumentFile, fileName: String, expectedSize: Int): WriteOutcome {
+        val deadline = System.currentTimeMillis() + RECONCILE_WINDOW_MS
+        var lastActual: Long? = null
+        while (true) {
+            lastActual = settledSize(docFolder, fileName)
+            if (verifyOutcome(expectedSize, lastActual) is WriteOutcome.Verified) {
+                Tracing.d(Category.DRIVE_FILES, TAG, "verifySettled: verified $fileName size=$lastActual")
+                return WriteOutcome.Verified
+            }
+            if (System.currentTimeMillis() >= deadline) break
+            delay(VERIFY_POLL_INTERVAL_MS)
+        }
+        try {
+            for (child in docFolder.listFiles()) {
+                if (child.name == fileName) {
+                    child.delete()
+                    break
+                }
+            }
+        } catch (e: Exception) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "verifySettled: partial cleanup failed for $fileName")
+        }
+        return verifyOutcome(expectedSize, lastActual)
+    }
+
+    private suspend fun settledSize(docFolder: DocumentFile, fileName: String): Long? {
+        try {
+            context.contentResolver.refresh(docFolder.uri, null, null)
+        } catch (_: Throwable) { }
+        val file = docFolder.findFile(fileName) ?: return null
+        return file.length()
+    }
+
+    private suspend fun readBytesGuarded(uri: Uri): ByteArray? {
+        val stream = context.contentResolver.openInputStream(uri) ?: return null
+        return try {
+            withTimeout(READ_GUARD_MS) {
+                runInterruptible { stream.use { it.readBytes() } }
+            }
+        } catch (e: Exception) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "readBytesGuarded: read aborted (${e.javaClass.simpleName})")
+            null
+        }
+    }
+
+    companion object {
+        private const val TAG = "DriveFileManager"
+        const val STALL_GUARD_MS = 60_000L
+        const val CLOSE_GUARD_MS = 10_000L
+        const val RECONCILE_WINDOW_MS = 30_000L
+        const val VERIFY_POLL_INTERVAL_MS = 2_000L
+        const val READ_GUARD_MS = 60_000L
+
+        fun verifyOutcome(expectedSize: Int, actualSize: Long?): WriteOutcome {
+            return if (actualSize == expectedSize.toLong()) {
+                WriteOutcome.Verified
+            } else {
+                WriteOutcome.Failed("write not settled: expected=$expectedSize actual=$actualSize")
+            }
+        }
     }
 
     suspend fun deleteFileByName(treeUri: String, docId: String, fileName: String): Boolean = withContext(Dispatchers.IO) {
@@ -154,7 +260,7 @@ class DriveFileManager @Inject constructor(
         val folder = root.findFile(docId) ?: return@withContext false
         try {
             context.contentResolver.refresh(folder.uri, null, null)
-        } catch (_: Exception) { }
+        } catch (_: Throwable) { }
         for (child in folder.listFiles()) {
             if (child.name == fileName) {
                 return@withContext child.delete()
@@ -167,7 +273,7 @@ class DriveFileManager @Inject constructor(
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
         try {
             context.contentResolver.refresh(root.uri, null, null)
-        } catch (_: Exception) { }
+        } catch (_: Throwable) { }
         for (child in root.listFiles()) {
             if (child.name == docId && child.isDirectory) return@withContext true
         }

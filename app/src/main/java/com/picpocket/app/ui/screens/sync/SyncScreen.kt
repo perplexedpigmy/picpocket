@@ -3,6 +3,8 @@ package com.picpocket.app.ui.screens.sync
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,7 +21,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -50,7 +51,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.SyncState
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -64,12 +64,6 @@ fun SyncScreen(
 
     LaunchedEffect(Unit) {
         viewModel.verifyConnection()
-    }
-
-    val signInLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        viewModel.handleSignInResult(result)
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -111,25 +105,19 @@ fun SyncScreen(
                 is ConnectionState.Disconnected -> {
                     Spacer(Modifier.height(32.dp))
                     Text(
-                        "Connect to Google Drive to sync your documents across devices.",
+                        "Select a folder to sync your documents across devices.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(16.dp))
                     Button(
-                        onClick = { signInLauncher.launch(viewModel.signInIntent) },
+                        onClick = { folderPickerLauncher.launch(null) },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Connect to Drive")
+                        Text("Select Folder")
                     }
-                }
-                is ConnectionState.DriveError -> {
-                    Text(
-                        (state.connectionState as ConnectionState.DriveError).message,
-                        color = MaterialTheme.colorScheme.error,
-                    )
                 }
                 is ConnectionState.Connected -> {
                     Card(modifier = Modifier.fillMaxWidth()) {
@@ -143,7 +131,7 @@ fun SyncScreen(
                                 )
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("Google Drive", style = MaterialTheme.typography.titleMedium)
+                                    Text("Drive", style = MaterialTheme.typography.titleMedium)
                                     if (state.folderName.isNotBlank()) {
                                         Text(
                                             state.folderName,
@@ -162,6 +150,7 @@ fun SyncScreen(
                                 Switch(
                                     checked = state.syncEnabled,
                                     onCheckedChange = { viewModel.toggleSync(it) },
+                                    modifier = Modifier.semantics { contentDescription = "Toggle sync" },
                                 )
                             }
                             if (!state.syncEnabled) {
@@ -302,11 +291,6 @@ fun SyncScreen(
     }
 
     when (actionState) {
-        is SyncActionState.FolderPickRequired -> {
-            LaunchedEffect(Unit) {
-                folderPickerLauncher.launch(null)
-            }
-        }
         is SyncActionState.Error -> {
             AlertDialog(
                 onDismissRequest = { viewModel.dismissAction() },

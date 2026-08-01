@@ -204,7 +204,7 @@ class DeviceRegistryTest {
         coEvery { documentStore.deleteDocument("doc-1") } returns Result.success(Unit)
         coEvery { driveFileManager.readFile("content://tree/", "doc-1", ".deleted") } returns
             json.encodeToString(TombstoneData(300L, "device-2", listOf("device-2"))).toByteArray(Charsets.UTF_8)
-        coEvery { driveFileManager.writeFile(any(), any(), any(), any(), any()) } returns true
+        coEvery { driveFileManager.writeFile(any(), any(), any(), any(), any()) } returns WriteOutcome.Verified
 
         val remote = DownloadEngine.RemoteDocument("doc-1", listOf(".deleted"), null, true)
         registry.detectOrphans(listOf(localDoc), listOf(remote))
@@ -227,7 +227,7 @@ class DeviceRegistryTest {
         )
         coEvery { driveFileManager.readFile("content://tree/", "doc-1", ".deleted") } returns
             json.encodeToString(TombstoneData(300L, "device-1", listOf("device-1"))).toByteArray(Charsets.UTF_8)
-        coEvery { driveFileManager.writeFile(any(), any(), any(), any(), any()) } returns true
+        coEvery { driveFileManager.writeFile(any(), any(), any(), any(), any()) } returns WriteOutcome.Verified
 
         val remote = DownloadEngine.RemoteDocument("doc-1", listOf(".deleted"), null, true)
         registry.detectOrphans(listOf(localDoc), listOf(remote))

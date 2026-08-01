@@ -17,7 +17,7 @@ class TracingConfig @Inject constructor(
     }
 
     val globalEnabled: Boolean
-        get() = prefs.getBoolean(KEY_GLOBAL_ENABLED, false)
+        get() = prefs.getBoolean(KEY_GLOBAL_ENABLED, true)
 
     fun setGlobalEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_GLOBAL_ENABLED, enabled).apply()

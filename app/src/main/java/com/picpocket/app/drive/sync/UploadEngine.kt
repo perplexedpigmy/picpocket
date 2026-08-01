@@ -3,6 +3,8 @@ package com.picpocket.app.drive.sync
 import android.content.Context
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
@@ -30,13 +32,13 @@ class UploadEngine @Inject constructor(
         return driveFileManager.createDocFolder(tree, docId)
     }
 
-    suspend fun uploadSinglePage(docId: String, pageFilename: String, data: ByteArray): Boolean {
-        val tree = treeUri() ?: return false
+    suspend fun uploadSinglePage(docId: String, pageFilename: String, data: ByteArray): WriteOutcome {
+        val tree = treeUri() ?: return WriteOutcome.Failed("no folder selected")
         return driveFileManager.writeFile(tree, docId, pageFilename, data)
     }
 
-    suspend fun uploadMetadataBytes(docId: String, data: ByteArray): Boolean {
-        val tree = treeUri() ?: return false
+    suspend fun uploadMetadataBytes(docId: String, data: ByteArray): WriteOutcome {
+        val tree = treeUri() ?: return WriteOutcome.Failed("no folder selected")
         return driveFileManager.writeFile(tree, docId, "metadata.json", data)
     }
 
@@ -48,7 +50,11 @@ class UploadEngine @Inject constructor(
         for (page in doc.pages) {
             val pageFile = documentStore.pageFile(docId, page.filename)
             if (pageFile.exists()) {
-                uploadSinglePage(docId, page.filename, pageFile.readBytes())
+                val outcome = uploadSinglePage(docId, page.filename, pageFile.readBytes())
+                if (outcome !is WriteOutcome.Verified) {
+                    Tracing.w(Category.DRIVE_FILES, TAG, "uploadDocument: page ${page.filename} failed: ${(outcome as? WriteOutcome.Failed)?.reason}")
+                    return false
+                }
             }
         }
 
@@ -57,7 +63,11 @@ class UploadEngine @Inject constructor(
             syncTimestamp = System.currentTimeMillis(),
         )
         val metadataBytes = json.encodeToString(syncDoc).toByteArray(Charsets.UTF_8)
-        uploadMetadataBytes(docId, metadataBytes)
+        val metadataOutcome = uploadMetadataBytes(docId, metadataBytes)
+        if (metadataOutcome !is WriteOutcome.Verified) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "uploadDocument: metadata failed for $docId: ${(metadataOutcome as? WriteOutcome.Failed)?.reason}")
+            return false
+        }
 
         info.syncVersion = syncDoc.syncVersion
         info.syncTimestamp = syncDoc.syncTimestamp
@@ -72,7 +82,10 @@ class UploadEngine @Inject constructor(
             ?: return Result.failure(Exception("Page $pageNumber not found"))
         val pageFile = documentStore.pageFile(docId, page.filename)
         if (pageFile.exists() != true) return Result.failure(Exception("Page file not found"))
-        uploadSinglePage(docId, page.filename, pageFile.readBytes())
+        val outcome = uploadSinglePage(docId, page.filename, pageFile.readBytes())
+        if (outcome !is WriteOutcome.Verified) {
+            return Result.failure(Exception("Failed to upload page ${page.filename}: ${(outcome as? WriteOutcome.Failed)?.reason}"))
+        }
         return Result.success(Unit)
     }
 
@@ -92,7 +105,10 @@ class UploadEngine @Inject constructor(
             ?: return Result.failure(Exception("Page $pageNumber not found"))
         val pageFile = documentStore.pageFile(docId, page.filename)
         if (pageFile.exists() != true) return Result.failure(Exception("Page file not found"))
-        uploadSinglePage(docId, page.filename, pageFile.readBytes())
+        val outcome = uploadSinglePage(docId, page.filename, pageFile.readBytes())
+        if (outcome !is WriteOutcome.Verified) {
+            return Result.failure(Exception("Failed to upload page ${page.filename}: ${(outcome as? WriteOutcome.Failed)?.reason}"))
+        }
         return Result.success(Unit)
     }
 
@@ -100,7 +116,10 @@ class UploadEngine @Inject constructor(
         val tree = treeUri() ?: return Result.failure(Exception("No folder selected"))
         val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
         val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
-        driveFileManager.writeFile(tree, docId, "metadata.json", metadataBytes)
+        val outcome = driveFileManager.writeFile(tree, docId, "metadata.json", metadataBytes)
+        if (outcome !is WriteOutcome.Verified) {
+            return Result.failure(Exception("Failed to upload metadata for $docId: ${(outcome as? WriteOutcome.Failed)?.reason}"))
+        }
         return Result.success(Unit)
     }
 
@@ -122,14 +141,14 @@ class UploadEngine @Inject constructor(
         for (page in doc.pages) {
             val pageFile = documentStore.pageFile(docId, page.filename)
             if (pageFile.exists() == true) {
-                if (!uploadSinglePage(docId, page.filename, pageFile.readBytes())) {
+                if (uploadSinglePage(docId, page.filename, pageFile.readBytes()) !is WriteOutcome.Verified) {
                     return Result.failure(Exception("Failed to upload page ${page.filename}"))
                 }
             }
         }
 
         val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
-        if (!uploadMetadataBytes(docId, metadataBytes)) {
+        if (uploadMetadataBytes(docId, metadataBytes) !is WriteOutcome.Verified) {
             return Result.failure(Exception("Failed to upload metadata for $docId"))
         }
 
@@ -145,6 +164,10 @@ class UploadEngine @Inject constructor(
         ).toByteArray(Charsets.UTF_8)
 
         driveFileManager.writeFile(tree, docId, ".deleted", tombstoneData)
+    }
+
+    companion object {
+        private const val TAG = "UploadEngine"
     }
 }
 

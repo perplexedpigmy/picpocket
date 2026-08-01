@@ -306,6 +306,127 @@ class SyncManagerTest {
         coVerify { journal.advanceCheckpoint() }
     }
 
+    // ── Journal consumption for never-synced docs (double-upload fix) ──
+
+    @Test
+    fun `journal entries for never-synced loop-owned docs are consumed without applying`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        every { journal.entriesFromCheckpoint() } returns listOf(
+            JournalEntry.AddPage("doc-1", 1, "page_001.jpg", 1024L),
+            JournalEntry.UpdateDocumentName("doc-1", "Renamed"),
+        )
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
+
+        syncManager.performSync()
+
+        coVerify(inverse = true) { uploadEngine.uploadPage(any(), any()) }
+        coVerify(inverse = true) { uploadEngine.updateMetadata(any()) }
+        coVerify(atLeast = 2) { journal.advanceCheckpoint() }
+        coVerify { uploadEngine.uploadDocument(doc) }
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+    }
+
+    @Test
+    fun `journal entries for already-synced docs are still applied`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L, syncVersion = 1)
+        every { journal.entriesFromCheckpoint() } returns listOf(JournalEntry.UpdatePageOcr("doc-1", 1, "text"))
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.updateMetadata("doc-1") } returns Result.success(Unit)
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
+
+        syncManager.performSync()
+
+        coVerify { uploadEngine.updateMetadata("doc-1") }
+    }
+
+    @Test
+    fun `ReEncrypt entries for never-synced docs are still applied by journal pass`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        every { journal.entriesFromCheckpoint() } returns listOf(JournalEntry.ReEncrypt("doc-1"))
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.reEncryptDocument("doc-1") } returns Result.success(Unit)
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
+
+        syncManager.performSync()
+
+        coVerify { uploadEngine.reEncryptDocument("doc-1") }
+        coVerify { journal.advanceCheckpoint() }
+    }
+
+    // ── Upload failure abort — Phase 8 ──
+
+    @Test
+    fun `sync aborts with error when uploadDocument returns false`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.uploadDocument(doc) } returns false
+
+        syncManager.performSync()
+
+        coVerify { retryHandler.onFailure() }
+        val state = syncManager.syncState.value
+        assert(state is SyncState.Error)
+        assertEquals("Upload failed for doc=doc-1", (state as SyncState.Error).message)
+    }
+
+    @Test
+    fun `sync aborts with error when uploadDocument throws`() = runTest {
+        val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.uploadDocument(doc) } throws RuntimeException("write failed")
+
+        syncManager.performSync()
+
+        coVerify { retryHandler.onFailure() }
+        val state = syncManager.syncState.value
+        assert(state is SyncState.Error)
+    }
+
+    @Test
+    fun `sync stops uploading remaining docs after first failure`() = runTest {
+        val doc1 = StoredDocument(id = "doc-1", name = "One", createdAt = 0L, updatedAt = 0L)
+        val doc2 = StoredDocument(id = "doc-2", name = "Two", createdAt = 0L, updatedAt = 0L)
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc1, doc2))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.uploadDocument(doc1) } returns false
+
+        syncManager.performSync()
+
+        coVerify(inverse = true) { uploadEngine.uploadDocument(doc2) }
+        assert(syncManager.syncState.value is SyncState.Error)
+    }
+
+    @Test
+    fun `sync aborts with error when re-upload via checkFiles fails`() = runTest {
+        val doc = StoredDocument(
+            id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L, syncVersion = 1,
+            pages = mutableListOf(StoredPage(pageNumber = 1, filename = "page_001.jpg", createdAt = 0L)),
+        )
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1",
+            fileNames = listOf("metadata.json"),
+            metadata = doc,
+            isDeleted = false,
+        )
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+        every { journal.isEmpty() } returns true
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns listOf(remote)
+        coEvery { downloadEngine.checkFiles("content://tree/", "doc-1", doc, any()) } returns listOf("page_001.jpg")
+        coEvery { uploadEngine.uploadDocument(doc) } returns false
+
+        syncManager.performSync()
+
+        coVerify { retryHandler.onFailure() }
+        assert(syncManager.syncState.value is SyncState.Error)
+    }
+
     // ── Encryption gating — Phase 7 ──
 
     @Test
@@ -383,6 +504,7 @@ class SyncManagerTest {
         val doc = StoredDocument(id = "doc-1", name = "Test", createdAt = 0L, updatedAt = 0L)
         coEvery { documentStore.listDocuments() } returns Result.success(listOf(doc))
         coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        coEvery { uploadEngine.uploadDocument(doc) } returns true
 
         syncManager.performSync()
 

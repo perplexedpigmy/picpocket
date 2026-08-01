@@ -61,7 +61,6 @@ class SyncViewModelTest {
         every { conflictResolver.getActiveConflicts() } returns emptyList()
         every { deviceRegistry.getMyDeleted() } returns emptyList()
         every { deviceRegistry.getOthersDeleted() } returns emptyList()
-        every { driveAuthManager.signInIntent } returns android.content.Intent()
         every { passphraseStore.getPassphrase() } returns null
         coEvery { syncManager.synthesizeReEncryptPass() } returns Unit
 
@@ -161,18 +160,8 @@ class SyncViewModelTest {
     }
 
     @Test
-    fun `handleSignInResult sets FolderPickRequired when no folder`() {
-        every { driveAuthManager.authState } returns MutableStateFlow(DriveAuthState.Connected)
-        every { localDriveIndex.hasValidFolder() } returns false
-
-        viewModel.handleSignInResult(mockk(relaxed = true))
-
-        assertEquals(SyncActionState.FolderPickRequired, viewModel.actionState.value)
-    }
-
-    @Test
-    fun `handleFolderPickerResult accepts valid Drive URI`() {
-        val uri = android.net.Uri.parse("content://com.google.android.apps.docs.storage/tree/abc")
+    fun `handleFolderPickerResult accepts valid SAF URI`() {
+        val uri = android.net.Uri.parse("content://org.nextcloud.documents/tree/abc")
         every { localDriveIndex.setRootTreeUri(any()) } returns Unit
         every { localDriveIndex.setRootFolderName(any()) } returns Unit
         every { localDriveIndex.hasValidFolder() } returns true
@@ -183,15 +172,6 @@ class SyncViewModelTest {
         viewModel.handleFolderPickerResult(uri)
 
         assertEquals(SyncActionState.Idle, viewModel.actionState.value)
-    }
-
-    @Test
-    fun `handleFolderPickerResult rejects non-Drive URI`() {
-        val uri = android.net.Uri.parse("content://other.provider/tree/abc")
-
-        viewModel.handleFolderPickerResult(uri)
-
-        assertTrue(viewModel.actionState.value is SyncActionState.Error)
     }
 
     @Test

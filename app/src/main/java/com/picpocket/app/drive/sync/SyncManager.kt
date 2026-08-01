@@ -20,8 +20,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.TimeoutCancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -95,9 +93,9 @@ class SyncManager @Inject constructor(
                 _syncState.value = SyncState.Idle
                 return
             }
+            var uploadFailure: String? = null
             withContext(Dispatchers.IO) {
-                withTimeout(30_000L) {
-                    retryHandler.waitBeforeRetry()
+                retryHandler.waitBeforeRetry()
                     Tracing.d(Category.DRIVE_API, TAG, "performSync: waitBeforeRetry done")
 
                     val localDocs = documentStore.listDocuments().getOrDefault(emptyList())
@@ -147,7 +145,12 @@ class SyncManager @Inject constructor(
                     conflictResolver.detectConflicts(localDocs, remoteDocs)
                     val conflictIds = conflictResolver.getActiveConflicts().map { it.docId }.toSet()
 
-                    processJournalEntries()
+                    val neverSyncedLoopOwned = localDocs
+                        .filter { it.syncVersion == 0 && it.id !in excludeIds && it.id !in conflictIds }
+                        .map { it.id }
+                        .toSet()
+
+                    processJournalEntries(neverSyncedLoopOwned)
 
                     for (doc in localDocs) {
                         if (doc.id in excludeIds) continue
@@ -161,11 +164,17 @@ class SyncManager @Inject constructor(
                         }
                         if (matched != null) {
                             Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${doc.id} uploading via $matched")
-                            try {
-                                val ok = uploadEngine.uploadDocument(doc)
-                                if (!ok) Tracing.w(Category.DRIVE_FILES, TAG, "performSync: uploadDocument returned false for doc=${doc.id}")
+                            val ok = try {
+                                uploadEngine.uploadDocument(doc)
                             } catch (e: Exception) {
                                 Tracing.e(Category.DRIVE_FILES, TAG, "performSync: uploadDocument threw for doc=${doc.id}: ${e.message}")
+                                false
+                            }
+                            if (!ok) {
+                                Tracing.e(Category.DRIVE_FILES, TAG, "performSync: upload failed for doc=${doc.id}, aborting sync")
+                                retryHandler.onFailure()
+                                uploadFailure = "Upload failed for doc=${doc.id}"
+                                return@withContext
                             }
                         } else {
                             Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${doc.id} skipped (remote=${remote != null} syncVer=${doc.syncVersion} journalEmpty=${journal.isEmpty()})")
@@ -202,7 +211,18 @@ class SyncManager @Inject constructor(
                                 val missing = downloadEngine.checkFiles(treeUri, local.id, local, remoteCache)
                                 if (missing.isNotEmpty()) {
                                     Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${local.id} missing=$missing re-uploading")
-                                    uploadEngine.uploadDocument(local)
+                                    val ok = try {
+                                        uploadEngine.uploadDocument(local)
+                                    } catch (e: Exception) {
+                                        Tracing.e(Category.DRIVE_FILES, TAG, "performSync: re-upload threw for doc=${local.id}: ${e.message}")
+                                        false
+                                    }
+                                    if (!ok) {
+                                        Tracing.e(Category.DRIVE_FILES, TAG, "performSync: re-upload failed for doc=${local.id}, aborting sync")
+                                        retryHandler.onFailure()
+                                        uploadFailure = "Upload failed for doc=${local.id}"
+                                        return@withContext
+                                    }
                                 }
                             } catch (e: Exception) {
                                 Tracing.w(Category.DRIVE_FILES, TAG, "performSync: checkFiles threw for doc=${local.id}: ${e.message}")
@@ -218,15 +238,15 @@ class SyncManager @Inject constructor(
 
                     retryHandler.onSuccess()
                 }
+            val failure = uploadFailure
+            if (failure != null) {
+                _syncState.value = SyncState.Error(failure)
+                return
             }
             _syncState.value = SyncState.Idle
             Tracing.d(Category.DRIVE_API, TAG, "performSync: complete")
         } catch (_: SyncAborted) {
             // state already set by gating code, fall through
-        } catch (e: TimeoutCancellationException) {
-            retryHandler.onFailure()
-            _syncState.value = SyncState.Error("Sync timed out")
-            Tracing.d(Category.DRIVE_API, TAG, "performSync: timed out")
         } catch (e: Exception) {
             retryHandler.onFailure()
             _syncState.value = SyncState.Error(e.message ?: "Sync failed")
@@ -244,8 +264,13 @@ class SyncManager @Inject constructor(
         }
     }
 
-    private suspend fun processJournalEntries() {
+    private suspend fun processJournalEntries(neverSyncedLoopOwned: Set<String>) {
         for (entry in journal.entriesFromCheckpoint()) {
+            if (entry.docId in neverSyncedLoopOwned && entry !is JournalEntry.ReEncrypt) {
+                Tracing.d(Category.DRIVE_FILES, TAG, "processJournalEntries: consuming ${entry::class.simpleName} for never-synced doc=${entry.docId} (upload loop owns it)")
+                journal.advanceCheckpoint()
+                continue
+            }
             try {
                 val ok = when (entry) {
                     is JournalEntry.AddPage -> uploadEngine.uploadPage(entry.docId, entry.pageNumber).isSuccess
