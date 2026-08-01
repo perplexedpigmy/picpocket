@@ -1,0 +1,16 @@
+FROM nextcloud:34
+
+# Save OFFICIAL entrypoint before we overwrite it
+RUN cp /entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Install fuse3 (needed if we ever run rclone mount inside container)
+RUN apt-get update && apt-get install -y fuse3 && rm -rf /var/lib/apt/lists/*
+
+# Reconfigure Apache to port 8080 (emulator expects 10.0.2.2:8080)
+RUN sed -i 's/Listen 80/Listen 8080/g' /etc/apache2/ports.conf && \
+    sed -i 's/:80>/:8080>/g' /etc/apache2/sites-enabled/000-default.conf
+
+# Custom entrypoint — rclone mount is handled on host side
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]

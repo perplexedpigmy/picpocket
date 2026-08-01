@@ -15,3 +15,11 @@ docs/
 *.hprof
 *.log
 /internal/
+sync-tests/.venv/
+sync-tests/secrets/
+sync-tests/classes.dex
+sync-tests/tmp_ss.png
+sync-tests/debug/*.xml
+sync-tests/.pytest_cache/
+.pytest_cache/
+__pycache__/

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picpocket-sync-tests"
+version = "0.1.0"
+description = "Multi-device e2e sync tests for PicPocket"
+requires-python = ">=3.10"
+dependencies = [
+    "pytest>=7.4",
+    "uiautomator2>=2.16",
+    "fpdf2>=2.8",
+    "requests>=2.31",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["scenarios"]

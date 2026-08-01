@@ -1,3 +1,9 @@
+
+
+rclone_mount := "./tmp/gdrive-test"
+compose_file := "./sync-tests/docker-compose.test.yml"
+avd_name := "testPixel7"
+
 # Justfile for PicPocket Android Project
 # Provides convenient tasks for common operations
 
@@ -68,3 +74,25 @@ cleanup-emulator:
     $$SDK_ROOT/11076708/bin/avdmanager delete avd -n testPixel7 || true
     yes | $$SDK_ROOT/11076708/bin/sdkmanager --sdk_root=$$SDK_ROOT --uninstall "system-images;android-34;google_apis;x86_64" || true
     @echo "Cleaned!"
+
+
+e2e-clean:
+    docker compose -f {{compose_file}} down -v --rmi all --remove-orphans
+    fusermount -uz {{rclone_mount}} || true
+    umount -l {{rclone_mount}} || true
+    rm -rf {{rclone_mount}}
+    docker run --rm -v /home/zun/dev/oc/pdfscanner/tmp:/tmp alpine sh -c "rm -rf /tmp/nc_data" 2>/dev/null || true
+    python sync-tests/scripts/kill_emulator.py {{avd_name}} || true
+
+infra-test:
+    cd sync-tests && .venv/bin/pytest infra_tests/ -v --tb=short --durations=5
+
+e2e-run:
+    ./gradlew assembleDebug
+    python sync-tests/scripts/ensure_emulator.py
+    cd sync-tests && .venv/bin/pytest -v -x
+
+
+up:
+    @docker compose -f {{compose_file}} up >/dev/null
+
