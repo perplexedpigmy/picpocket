@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 def infra():
     nextcloud.start()
     yield
+    nextcloud.empty_drive_trash()
     nextcloud.stop()
 
 

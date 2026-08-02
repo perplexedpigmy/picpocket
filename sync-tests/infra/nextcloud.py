@@ -188,6 +188,7 @@ def _ensure_rclone_mount() -> None:
                 "--allow-other",
                 "--uid=33", "--gid=33",
                 "--vfs-cache-mode", "writes",
+                "--drive-use-trash=false",
                 "--cache-dir", str(VFS_CACHE_DIR),
                 "--dir-cache-time", f"{RCLONE_DIR_CACHE_TIME}s",
                 "--poll-interval", "0",
@@ -294,6 +295,88 @@ def purge_drive(timeout: int = 120) -> None:
         raise TimeoutError(f"Drive PicPocketTest not empty after purge: {names}")
     _occ(["files:scan", "--all"], check=False)
     logger.info("Drive PicPocketTest purged; Nextcloud re-scanned")
+
+
+def empty_drive_trash(timeout: int = 120) -> None:
+    """Permanently delete trashed items under PicPocketTest (Drive bin).
+
+    Test deletes accumulate in the Drive bin because rclone's default
+    --drive-use-trash=true sends deletes to trash. rclone has no native
+    empty-trash command, so list trashed items scoped to PicPocketTest
+    (--drive-trashed-only) and permanently delete them
+    (--drive-use-trash=false). Best-effort: logs failures, never raises,
+    so a cleanup problem can't fail the test session.
+    """
+    def _trashed_rows() -> list[dict]:
+        result = _run(
+            ["rclone", "lsjson", "--drive-trashed-only", "--recursive",
+             f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "rclone trashed-only lsjson failed (rc=%d): %s",
+                result.returncode, (result.stderr or result.stdout or "").strip(),
+            )
+            return []
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            logger.warning("rclone trashed-only lsjson parse error: %s", e)
+            return []
+
+    if not _trashed_rows():
+        logger.info("Drive bin is already empty")
+        return
+
+    result = _run(
+        ["rclone", "delete", "--drive-trashed-only", "--drive-use-trash=false",
+         f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "rclone drive bin cleanup failed (rc=%d): %s",
+            result.returncode, (result.stderr or result.stdout or "").strip(),
+        )
+        return
+
+    deadline = time.time() + timeout
+    while _trashed_rows() and time.time() < deadline:
+        logger.warning("Drive bin not empty after delete, retrying")
+        time.sleep(5)
+    remaining = _trashed_rows()
+    if remaining:
+        names = [r.get("Path", r.get("Name", "?")) for r in remaining[:10]]
+        logger.warning("Drive bin not empty after cleanup: %s", names)
+    else:
+        logger.info("Drive bin purged (PicPocketTest trash emptied)")
+
+
+def purge_remote_dir(rel_path: str) -> bool:
+    """Permanently delete a directory under PicPocketTest via the backend.
+
+    rclone purge hits the Drive API directly, bypassing the FUSE mount
+    listing, so it also removes files that a FUSE-based rmtree missed because
+    their async upload (vfs write-back) was still in flight when the cleanup
+    ran. Returns True if the path was present on the backend and purged,
+    False if it was already gone. Best-effort: never raises, so a cleanup
+    problem can't fail a test.
+    """
+    target = f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}/{rel_path}"
+    check = _run(["rclone", "lsjson", "--recursive", target], check=False)
+    if check.returncode != 0:
+        return False
+    result = _run(["rclone", "purge", "--drive-use-trash=false", target], check=False)
+    if result.returncode != 0:
+        logger.warning(
+            "rclone purge %s failed (rc=%d): %s",
+            rel_path, result.returncode,
+            (result.stderr or result.stdout or "").strip(),
+        )
+        return False
+    logger.info("Drive backend purge complete: %s", rel_path)
+    return True
 
 
 def wait_drive_finalized(path: str, min_size: int = 0, timeout: float = 180.0) -> list[dict]:

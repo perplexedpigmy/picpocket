@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import requests
 
+from infra import nextcloud
 from .utils import put_collection
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ def test_label(fuse_path) -> str:
     d = fuse_path / name
     if d.exists():
         shutil.rmtree(str(d), ignore_errors=True)
+    nextcloud.purge_remote_dir(name)
 
 
 def _wait_for_webdav(ocr, path: str, expect_exists: bool, timeout: float = PROBE_TIMEOUT) -> bool:

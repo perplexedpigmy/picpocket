@@ -24,6 +24,7 @@ def nextcloud_infra():
     """Session-scoped Nextcloud infrastructure (start/teardown)."""
     nextcloud.start()
     yield
+    nextcloud.empty_drive_trash()
     nextcloud.stop()
 
 
