@@ -85,6 +85,7 @@ class TestFuseWriteRead:
         assert p.read_bytes() == b"second"
         logger.info("overwrite OK")
 
+    @pytest.mark.xfail(reason="rclone VFS unlink drops backing data for still-open fds; POSIX delete-while-open not supported")
     def test_delete_while_open(self, test_dir):
         p = test_dir / "while_open"
         p.write_bytes(b"data")
