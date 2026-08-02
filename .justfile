@@ -11,7 +11,7 @@ avd_name := "testPixel7"
 APP_NAME := "com.picpocket.app"
 APK_PATH := "app/build/outputs/apk/debug/app-debug.apk"
 
-default: help
+_default: help
 
 # List all available tasks (descriptions from the comment above each task)
 help:
@@ -83,8 +83,9 @@ sync-clean:
 # Runs sync-tests/infra_tests/ (fuse mount, webdav, cross-layer, edge cases)
 # against the Nextcloud + rclone stack only — no emulator, no app.
 # Used to gain confidence in the storage primitives.
-lower-sync-run:
-    cd sync-tests && .venv/bin/pytest infra_tests/ -v --tb=short --durations=5
+# Extra args (e.g. -k <expr>, --maxfail=1) are passed to pytest.
+lower-sync-run *args:
+    cd sync-tests && .venv/bin/pytest infra_tests/ -v --tb=short --durations=5 {{args}}
 
 # FULL STACK: SAF → WebDAV → rclone → Drive.
 # Builds the APK, boots the emulator, and runs scenarios/test_saf_to_drive.py
