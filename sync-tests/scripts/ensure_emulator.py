@@ -34,6 +34,7 @@ def kill_all_emulators() -> None:
     for serial in _list_emulators():
         _adb("-s", serial, "emu", "kill", timeout=10)
         print(f"Killed {serial}")
+    subprocess.run(["pkill", "-f", "qemu-system"], capture_output=True, text=True, timeout=10)
     time.sleep(3)
 
 
@@ -63,6 +64,7 @@ def boot_from_snapshot() -> str:
         [
             str(emulator),
             "-avd", AVD_NAME,
+            "-port", "5554",
             "-no-window", "-noaudio",
             "-gpu", "swiftshader_indirect",
             "-read-only",
@@ -73,7 +75,7 @@ def boot_from_snapshot() -> str:
     )
 
     print("Waiting for device...")
-    _adb("wait-for-device", timeout=120)
+    _adb("-s", "emulator-5554", "wait-for-device", timeout=180)
 
     serial = _list_emulators()
     if not serial:
