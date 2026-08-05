@@ -8,14 +8,6 @@ from infra.nextcloud import purge_drive, wait_drive_finalized
 
 logger = logging.getLogger(__name__)
 
-def _ensure_picpockettest_visible():
-    """Write a non-hidden marker file via WebDAV so PicPocketTest is indexed in Nextcloud immediately."""
-    from oracle.nextcloud_oracle import NextcloudOracle
-    oracle = NextcloudOracle()
-    oracle.write_file("marker.txt", "marker")
-    oracle.write_file(".saf-marker", "marker")
-    logger.info("PicPocketTest seeded with marker.txt via WebDAV")
-
 
 def _adb_tap(text, emu_a, timeout=10):
     """Like _input_tap but uses adb shell input tap (even more reliable)."""
@@ -47,7 +39,6 @@ class TestSafToDrive:
         purge_drive()
 
     def test_select_picpockettest_folder(self, emu_a):
-        _ensure_picpockettest_visible()
         self._select_picpockettest_folder(emu_a)
 
         toggle = emu_a.d(description="Toggle sync")
@@ -55,7 +46,6 @@ class TestSafToDrive:
 
     def test_small_file_through_chain(self, emu_a, watcher_a, oracle):
         generate_and_push(emu_a.adb, "saf-test", pages=1)
-        _ensure_picpockettest_visible()
         self._select_picpockettest_folder(emu_a)
         self._toggle_sync_on(emu_a)
 
@@ -69,7 +59,6 @@ class TestSafToDrive:
 
     def test_large_file_through_chain(self, emu_a, watcher_a, oracle):
         generate_and_push(emu_a.adb, "saf-large", pages=50)
-        _ensure_picpockettest_visible()
         self._select_picpockettest_folder(emu_a, timeout=90)
         self._toggle_sync_on(emu_a)
 
@@ -83,7 +72,6 @@ class TestSafToDrive:
 
     def test_after_reinstall(self, emu_a, watcher_a, oracle):
         generate_and_push(emu_a.adb, "saf-reinstall", pages=1)
-        _ensure_picpockettest_visible()
         self._select_picpockettest_folder(emu_a)
         self._toggle_sync_on(emu_a)
 

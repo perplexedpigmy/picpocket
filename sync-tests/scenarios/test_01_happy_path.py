@@ -4,6 +4,7 @@ import time
 import pytest
 
 from devices.pdf_utils import generate_and_push
+from devices.tracing import sync_with_false_mutex_retry
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +33,26 @@ class TestHappyPath:
         assert drive_files, "Drive folder empty after sync"
 
     def test_b_downloads_from_other_device(
-        self, emu_a, emu_b, watcher_a, watcher_b, oracle, two_devices
+        self, emu_a, emu_b, watcher_a, watcher_b, oracle, two_devices, reset_state_b
     ):
+        generate_and_push(emu_a.adb, "test-3page", pages=3)
         emu_a.open_app()
-        emu_a.open_settings()
-        emu_a.trigger_sync()
-        watcher_a.wait_for_sync()
+        emu_a.import_pdf("test-3page.pdf")
+        time.sleep(3)
+        sync_with_false_mutex_retry(emu_a, watcher_a)
 
-        emu_b.open_app()
+        doc_prefix = oracle.wait_for_doc_folder()
+        assert doc_prefix, "Doc not found in Drive after A sync"
+
+        emu_b.ensure_drive_configured()
+        sync_with_false_mutex_retry(emu_b, watcher_b)
+
+        # Round 1 primes the Nextcloud client's on-demand folder refresh; the
+        # app's first sync read a stale (empty) child listing, so wait for the
+        # client to persist the doc folder's children before syncing again.
+        watcher_b.wait_for_client_refresh(doc_prefix)
         emu_b.trigger_sync()
         watcher_b.wait_for_sync()
 
+        emu_b._go_home(timeout=10.0)
         assert emu_b.assert_doc_exists("test-3page"), "Doc not visible on device B"

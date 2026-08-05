@@ -1,5 +1,7 @@
+import json
 import logging
 import time
+from typing import Optional
 
 import uiautomator2 as u2
 
@@ -37,17 +39,67 @@ class UiDevice:
         else:
             logger.info("App opened on %s", self.serial)
 
-    def open_settings(self):
-        self.d(description="Settings").click(timeout=5)
-        if self.d(text="Settings").wait(timeout=10.0):
-            logger.debug("Settings opened on %s", self.serial)
-        else:
-            logger.error("Settings screen did not open on %s", self.serial)
+    def open_settings(self, timeout: float = 20.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                self.d(description="Settings").click(timeout=5)
+            except Exception:  # noqa: BLE001 - selector retry
+                self._go_home(timeout=8.0)
+                time.sleep(1)
+                continue
+            if self.d(text="Settings").wait(timeout=10.0):
+                logger.debug("Settings opened on %s", self.serial)
+                return True
+            self._go_home(timeout=8.0)
+            time.sleep(1)
+        # Not foreground or on an unexpected screen: relaunch and try once more.
+        self.open_app()
+        if self.d(description="Settings").exists:
+            self.d(description="Settings").click(timeout=5)
+            if self.d(text="Settings").wait(timeout=10.0):
+                logger.debug("Settings opened after relaunch on %s", self.serial)
+                return True
+        logger.error("Settings screen did not open on %s", self.serial)
+        return False
+
+    def _adb_tap(self, text: str, timeout: float = 10.0) -> bool:
+        """Tap a text element via `adb shell input tap` (more reliable than
+        uiautomator2 .click(), which can hit stale/non-rendered nodes).
+
+        Mirrors test_saf_to_drive._adb_tap, which provisioned the reliable
+        sync-trigger path.
+        """
+        return self._adb_tap_selector("text", text, timeout)
+
+    def _adb_tap_desc(self, description: str, timeout: float = 10.0) -> bool:
+        return self._adb_tap_selector("description", description, timeout)
+
+    def _adb_tap_selector(self, key: str, value: str, timeout: float = 10.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            el = self.d(**{key: value})
+            if el.exists:
+                try:
+                    info = self.d.jsonrpc.objInfo(el.selector)
+                except Exception:  # noqa: BLE001 - selector may be stale
+                    time.sleep(0.5)
+                    continue
+                b = info["bounds"]
+                cx = (b["left"] + b["right"]) // 2
+                cy = (b["top"] + b["bottom"]) // 2
+                self.adb.shell(f"input tap {cx} {cy}")
+                time.sleep(0.5)
+                return True
+            time.sleep(0.5)
+        return False
 
     def trigger_sync(self):
-        self._go_home(timeout=5.0)
-        self.open_settings()
-        self.d(text="Sync").click()
+        self._go_home(timeout=15.0)
+        if not self.open_settings():
+            logger.warning("Settings not reachable on %s", self.serial)
+        if not self._adb_tap("Sync", timeout=3.0):
+            logger.warning("Sync button not found on %s", self.serial)
         time.sleep(1)
         sync_toggle = self.d(description="Toggle sync")
         if sync_toggle.wait(timeout=3.0):
@@ -59,12 +111,10 @@ class UiDevice:
                     logger.info("Sync toggled ON on %s", self.serial)
                 else:
                     logger.warning("Sync toggle click did not dismiss hint on %s", self.serial)
-        sync_now = self.d(text="Sync Now")
-        if sync_now.wait(timeout=5.0):
-            sync_now.click()
+        ok = self._adb_tap("Sync Now", timeout=5.0)
+        if ok:
             time.sleep(2)
-            logger.info("Sync Now clicked on %s", self.serial)
-            self.adb.shell("screencap -p /sdcard/sync_now.png")
+            logger.info("Sync Now tapped (adb) on %s", self.serial)
         else:
             logger.warning("Sync Now button not found on %s", self.serial)
 
@@ -113,6 +163,36 @@ class UiDevice:
             time.sleep(0.5)
         logger.warning("Document '%s' not found on %s after %.1fs", title, self.serial, timeout)
         return False
+
+    def page_file_exists(self, doc_id: str, filename: str, timeout: float = 20.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            out = self.adb.shell(
+                f"run-as {APP_PACKAGE} ls files/documents/{doc_id}/ 2>/dev/null || true",
+                timeout=5,
+            )
+            if filename in (out or "").split():
+                logger.info("Page file '%s' present on %s", filename, self.serial)
+                return True
+            time.sleep(2)
+        logger.warning(
+            "Page file '%s' not found for doc %s on %s", filename, doc_id, self.serial
+        )
+        return False
+
+    def read_device_metadata(self, doc_id: str) -> Optional[dict]:
+        out = self.adb.shell(
+            f"run-as {APP_PACKAGE} cat files/documents/{doc_id}/metadata.json 2>/dev/null || true",
+            timeout=5,
+        )
+        if not out:
+            logger.warning("Device metadata.json not found for doc %s on %s", doc_id, self.serial)
+            return None
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as e:
+            logger.warning("Device metadata.json unparseable for %s: %s", doc_id, e)
+            return None
 
     def _go_home(self, timeout: float = 10.0):
         deadline = time.time() + timeout

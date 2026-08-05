@@ -4,63 +4,89 @@ import time
 import pytest
 
 from devices.pdf_utils import generate_and_push
+from devices.tracing import (
+    ENCRYPTION_GATING,
+    sync_with_false_mutex_retry,
+    wait_for_pattern_with_false_mutex_retry,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class TestEncryption:
     @pytest.fixture(autouse=True)
-    def setup(self, reset_state, ensure_drive_configured, emu_a):
+    def setup(self, reset_state, reset_state_b, ensure_drive_configured, emu_a, emu_b):
         self.emu_a = emu_a
+        self.emu_b = emu_b
 
-    def test_encrypted_drive_blocks_unauthenticated(
-        self, emu_a, watcher_a
+    def test_encrypted_drive_blocks_other_device(
+        self, emu_a, emu_b, watcher_a, watcher_b, oracle, two_devices
     ):
+        # Device A imports and enables encryption with a passphrase.
         generate_and_push(emu_a.adb, "test-enc", pages=1)
         emu_a.open_app()
         emu_a.import_pdf("test-enc.pdf")
         time.sleep(3)
-        emu_a.trigger_sync()
-        watcher_a.wait_for_sync()
+        sync_with_false_mutex_retry(emu_a, watcher_a)
 
-        emu_a.open_settings()
-        emu_a.d(text="Encryption").click()
-        time.sleep(1)
-        emu_a.d(text="Enable encryption").click()
-        emu_a.d.send_keys("test-passphrase-123")
-        emu_a.d(text="OK").click()
-        time.sleep(2)
-        emu_a.trigger_sync()
-        watcher_a.wait_for_sync()
-
-        emu_a.adb.clear_app_data()
-        time.sleep(2)
-
-        emu_a.open_app()
         emu_a.open_settings()
         emu_a.d(text="Sync").click()
         time.sleep(1)
-        emu_a.d(text="Enable sync").click()
-        time.sleep(2)
-        emu_a._navigate_saf_folder("PicPocketTest", timeout=60.0)
-        emu_a.d.press("back")
-        emu_a.open_app()
+        self._enable_encryption(emu_a, "test-passphrase-123")
+        # Enabling encryption launches a sync inside the SyncViewModel scope;
+        # triggering another one would navigate home and cancel it ("Job was
+        # cancelled"), so wait without re-triggering.
+        sync_with_false_mutex_retry(emu_a, watcher_a, trigger=False, timeout=150.0)
 
-        emu_a.trigger_sync()
-        result = watcher_a.wait_for_pattern(
-            __import__("re").compile(r"remoteEncrypted=true, passphraseSet=false")
+        # Device B (fresh device, unencrypted local state) selects the folder
+        # and tries to sync — it must be gated because the Drive is encrypted.
+        emu_b.ensure_drive_configured()
+        result = wait_for_pattern_with_false_mutex_retry(
+            emu_b, watcher_b, ENCRYPTION_GATING
         )
-        logger.info("Encryption gating: %s", result)
+        logger.info("Encryption gating on B: %s", result)
 
-        error_text = emu_a.d(textContains="This Drive is encrypted")
-        assert error_text.wait(timeout=10.0), "Encryption error not shown"
+        error_text = emu_b.d(textContains="This Drive is encrypted")
+        assert error_text.wait(timeout=10.0), "Encryption error not shown on B"
 
-        emu_a.d(text="Enter passphrase").click()
-        emu_a.d.send_keys("test-passphrase-123")
-        emu_a.d(text="OK").click()
+        # Entering the correct passphrase restores sync (auto-sync again, so
+        # wait without re-triggering to avoid cancelling it).
+        self._enable_encryption(emu_b, "test-passphrase-123")
+        sync_with_false_mutex_retry(emu_b, watcher_b, trigger=False, timeout=150.0)
+
+        emu_b._go_home(timeout=10.0)
+        assert emu_b.assert_doc_exists("test-enc"), "Doc not visible on B after passphrase"
+
+    @staticmethod
+    def _enable_encryption(emu, passphrase: str):
+        """Open Sync screen and enable encryption via the passphrase dialog.
+
+        The "Enable Encryption" button lives in the Sync screen's Encryption
+        section. It opens a "Set Encryption Passphrase" dialog with Passphrase
+        + Confirm passphrase fields, confirmed with "Save".
+
+        Fields are filled with set_text (not send_keys): the Compose
+        OutlinedTextFields never receive IME keystrokes from uiautomator's
+        send_keys, which left them empty and made Save a silent no-op.
+        """
+        emu.open_settings()
+        emu.d(text="Sync").click()
+        time.sleep(1)
+        btn = emu.d(text="Enable Encryption")
+        assert btn.wait(timeout=10.0), "Enable Encryption button not found"
+        btn.click()
         time.sleep(1)
 
-        emu_a.trigger_sync()
-        watcher_a.wait_for_sync()
+        fields = emu.d(className="android.widget.EditText")
+        assert len(fields) >= 2, "Passphrase dialog fields not found"
+        fields[0].set_text(passphrase)
+        fields[1].set_text(passphrase)
+        save = emu.d(text="Save")
+        assert save.wait(timeout=5.0), "Save button not found in passphrase dialog"
+        save.click()
+        time.sleep(2)
 
-        assert emu_a.assert_doc_exists("test-enc"), "Doc not visible after passphrase"
+        encrypted_text = emu.d(text="Drive files are encrypted at rest")
+        assert encrypted_text.wait(timeout=10.0), (
+            "Encryption did not enable on %s (passphrase fields not populated)" % emu.serial
+        )

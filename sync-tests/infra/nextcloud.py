@@ -124,7 +124,14 @@ IMAGE_TAG = "nextcloud-rclone:test"
 
 def _is_rclone_mounted() -> bool:
     """Check if rclone mount is already active at RCLONE_MOUNT_POINT."""
-    if not RCLONE_MOUNT_POINT.exists():
+    try:
+        if not RCLONE_MOUNT_POINT.exists():
+            return False
+    except OSError as e:
+        # A dead FUSE mount makes stat() raise "Transport endpoint is not
+        # connected" instead of returning False. Treat it as unmounted and
+        # let the caller clear the stale transport endpoint.
+        logger.warning("Stale rclone mount at %s (%s) — treating as unmounted", RCLONE_MOUNT_POINT, e)
         return False
     result = _run(["mountpoint", "-q", str(RCLONE_MOUNT_POINT)], check=False)
     return result.returncode == 0
@@ -176,6 +183,11 @@ def _ensure_rclone_mount() -> None:
     if mounted:
         logger.info("rclone process running at %s", RCLONE_MOUNT_POINT)
     else:
+        # A dead rclone daemon leaves a stale FUSE transport endpoint behind;
+        # fusermount clears it so the fresh mount lands on a clean directory.
+        # Harmless if the path is not actually mounted.
+        _run(["fusermount", "-u", "-z", str(RCLONE_MOUNT_POINT)], check=False)
+        time.sleep(1)
         RCLONE_MOUNT_POINT.mkdir(parents=True, exist_ok=True)
         VFS_CACHE_DIR = RCLONE_MOUNT_POINT.parent / "rclone-vfs-cache"
         VFS_CACHE_DIR.mkdir(parents=True, exist_ok=True)

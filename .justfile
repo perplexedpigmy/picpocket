@@ -7,6 +7,7 @@
 rclone_mount := "./tmp/gdrive-test"
 compose_file := "./sync-tests/docker-compose.test.yml"
 avd_name := "testPixel7"
+sdk_root := env_var_or_default("ANDROID_HOME", env_var_or_default("ANDROID_SDK_ROOT", "/home/zun/.local/android-sdk"))
 
 APP_NAME := "com.picpocket.app"
 APK_PATH := "app/build/outputs/apk/debug/app-debug.apk"
@@ -51,17 +52,29 @@ clean:
 # One-time setup of the testPixel7 AVD + system image (requires sdkmanager + avdmanager)
 setup-emulator:
     @echo "Setting up emulator..."
-    SDK_ROOT=$${ANDROID_SDK_ROOT:-~/.local/android-sdk}
-    $$SDK_ROOT/11076708/bin/sdkmanager --sdk_root=$$SDK_ROOT "system-images;android-34;google_apis;x86_64"
-    echo "no" | $$SDK_ROOT/11076708/bin/avdmanager create avd -n testPixel7 -k "system-images;android-34;google_apis;x86_64" -d pixel_7
+    {{sdk_root}}/cmdline-tools/latest/bin/sdkmanager --sdk_root={{sdk_root}} "system-images;android-34;google_apis;x86_64"
+    echo "no" | {{sdk_root}}/cmdline-tools/latest/bin/avdmanager create avd -n testPixel7 -k "system-images;android-34;google_apis;x86_64" -d pixel_7
     @echo "Emulator ready! Use 'just sync-run' to run the sync scenarios."
+
+# Create the second AVD (testPixel7b) for two-device sync scenarios. Same
+# system image + device definition as testPixel7, its own snapshot store.
+setup-emulator-b:
+    @echo "Setting up second emulator AVD (testPixel7b)..."
+    echo "no" | {{sdk_root}}/cmdline-tools/latest/bin/avdmanager create avd -n testPixel7b -k "system-images;android-34;google_apis;x86_64" -d pixel_7
+    @echo "testPixel7b ready! Bake its snapshot with 'just create-snapshot -- --avd testPixel7b --port 5556'."
+
+# Bake a configured snapshot for an AVD (Nextcloud account + PIN 1234).
+# Defaults bake testPixel7 on port 5554. For the second device:
+#   just create-snapshot -- --avd testPixel7b --port 5556
+# One-time provisioning step; not part of sync-run.
+create-snapshot *args:
+    python sync-tests/scripts/create_snapshot.py {{args}}
 
 # Delete the testPixel7 AVD and its system image
 cleanup-emulator:
     @echo "Cleaning up..."
-    SDK_ROOT=$${ANDROID_SDK_ROOT:-~/.local/android-sdk}
-    $$SDK_ROOT/11076708/bin/avdmanager delete avd -n testPixel7 || true
-    yes | $$SDK_ROOT/11076708/bin/sdkmanager --sdk_root=$$SDK_ROOT --uninstall "system-images;android-34;google_apis;x86_64" || true
+    {{sdk_root}}/cmdline-tools/latest/bin/avdmanager delete avd -n testPixel7 || true
+    yes | {{sdk_root}}/cmdline-tools/latest/bin/sdkmanager --sdk_root={{sdk_root}} --uninstall "system-images;android-34;google_apis;x86_64" || true
     @echo "Cleaned!"
 
 # Start the Nextcloud + rclone test stack in the background (detached).
@@ -97,7 +110,8 @@ full-sync-run *args:
     cd sync-tests && systemd-inhibit --what=sleep -- .venv/bin/pytest scenarios/test_saf_to_drive.py -v {{args}}
 
 # ALL SYNC SCENARIOS between multiple devices.
-# Builds the APK, boots the emulator, and runs every scenario in
+# Builds the APK, boots BOTH emulators (testPixel7@5554 + testPixel7b@5556)
+# from their sync_test_ready snapshots, and runs every scenario in
 # sync-tests/scenarios/ (incl. two-device tests). This is the main
 # multi-device sync testing surface. Extra args are passed to pytest.
 sync-run *args:

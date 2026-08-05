@@ -203,6 +203,34 @@ class NextcloudOracle:
         """Return list of docs with name key for test assertions."""
         return [{"name": f} for f in self.list_files("/PicPocketTest")]
 
+    def wait_for_doc(self, prefix: str, timeout: float = 120.0) -> Optional[dict]:
+        """Wait until a doc whose name starts with `prefix` appears in Drive.
+
+        Deprecated: doc folders are UUID-named (not title-derived), so a
+        title prefix never matches. Use wait_for_doc_folder instead.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for doc in self.list_docs():
+                if doc["name"].startswith(prefix):
+                    return doc
+            time.sleep(2)
+        return None
+
+    def wait_for_doc_folder(self, timeout: float = 120.0) -> Optional[str]:
+        """Wait until a doc folder (non-hidden directory) appears in Drive.
+
+        Mirrors test_saf_to_drive._assert_verified_completion: doc folders are
+        named by UUID, so detect them by directory-ness, not by title prefix.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for name, is_col in self._list_entries("/PicPocketTest"):
+                if is_col and not name.startswith("."):
+                    return name
+            time.sleep(2)
+        return None
+
     def write_file(self, path: str, content: str, mime_type: str = "text/plain"):
         """Write a file to PicPocketTest via WebDAV.
 

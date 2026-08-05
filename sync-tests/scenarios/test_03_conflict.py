@@ -23,16 +23,20 @@ class TestConflict:
         emu_a.trigger_sync()
         watcher_a.wait_for_sync()
 
-        docs = oracle.list_docs()
-        matching = [d for d in docs if d["name"].startswith("test-conflict")]
-        assert matching, "Doc not found in Drive after initial sync"
-        doc_prefix = matching[0]["name"].split("/")[0]
+        doc_prefix = oracle.wait_for_doc_folder()
+        assert doc_prefix, "Doc not found in Drive after initial sync"
 
-        emu_a.d(text="test-conflict").click()
+        emu_a._go_home(timeout=15.0)
+        assert emu_a._adb_tap("test-conflict", timeout=10.0), "Doc not found for rename"
         time.sleep(2)
-        emu_a.d(text="Rename").click()
-        emu_a.d.send_keys("test-conflict-renamed")
-        emu_a.d(text="OK").click()
+        assert emu_a._adb_tap_desc("More options", timeout=10.0), "More options not found"
+        assert emu_a._adb_tap("Rename", timeout=10.0), "Rename action not found"
+        time.sleep(1)
+        rename_field = emu_a.d(className="android.widget.EditText")
+        assert rename_field.wait(timeout=5.0), "Rename text field not found"
+        rename_field.set_text("test-conflict-renamed")
+        time.sleep(1)
+        assert emu_a._adb_tap("Save", timeout=10.0), "Rename Save not found"
         time.sleep(1)
         emu_a.trigger_sync()
         watcher_a.wait_for_sync()
@@ -53,3 +57,9 @@ class TestConflict:
         )
         logger.info("Conflict detected: %s", result)
         watcher_a.wait_for_sync()
+
+        emu_a.open_settings()
+        emu_a.d(text="Sync").click()
+        time.sleep(2)
+        conflicts_badge = emu_a.d(textContains="Conflicts")
+        assert conflicts_badge.wait(timeout=10.0), "Conflict UI did not surface conflicting doc"

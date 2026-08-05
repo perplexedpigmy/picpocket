@@ -37,7 +37,10 @@ def oracle():
 @pytest.fixture(scope="session")
 def device_serials():
     from scripts.ensure_emulator import boot_from_snapshot
-    return [boot_from_snapshot()]
+    serial = boot_from_snapshot()
+    _disable_captive_portal(AdbDevice(serial))
+    _disable_play_updates(AdbDevice(serial))
+    return [serial]
 
 
 @pytest.fixture
@@ -45,9 +48,18 @@ def serial_a(device_serials):
     return device_serials[0]
 
 
-@pytest.fixture
-def serial_b(device_serials):
-    return device_serials[1] if len(device_serials) > 1 else device_serials[0]
+@pytest.fixture(scope="session")
+def serial_b():
+    """Serial for device B, booted lazily on the first request.
+
+    Only tests that actually use device B pull this fixture, so single-device
+    tests never boot (or reset) a second emulator. Booted once per session.
+    """
+    from scripts.ensure_emulator import boot_device_b
+    serial = boot_device_b()
+    _disable_captive_portal(AdbDevice(serial))
+    _disable_play_updates(AdbDevice(serial))
+    return serial
 
 
 @pytest.fixture
@@ -65,9 +77,9 @@ def emu_b(serial_b, request):
 
 
 @pytest.fixture
-def two_devices(device_serials):
-    if len(device_serials) < 2:
-        pytest.skip("Need two connected devices for this test")
+def two_devices(serial_b):
+    """Marker fixture: ensures device B is booted for tests that need it."""
+    return serial_b
 
 
 @pytest.fixture
@@ -122,6 +134,41 @@ def _enable_tracing(device: AdbDevice):
         logger.error("Failed to enable Tracing on %s: %s", device.serial, verify.strip() or "empty")
 
 
+def _disable_captive_portal(device: AdbDevice):
+    """Stop Android from periodically disabling the emulator WiFi.
+
+    Android's captive-portal validation probes the internet and, when the
+    probe times out (common on test hosts with limited internet), marks the
+    virtual WiFi as "no internet access" and DISABLES it for a while. During
+    that window every connection through the network — including the app's
+    WebDAV calls to 10.0.2.2:8080 — is dropped at TCP connect, surfacing in
+    the app as a 15s ConnectTimeout on the sync-lock PUT. Disabling the
+    captive portal checks keeps the network stable.
+    """
+    for setting, value in [
+        ("captive_portal_mode", "0"),
+        ("captive_portal_detection_enabled", "0"),
+        ("wifi_watchdog_on", "0"),
+        ("wifi_watchdog_poor_network_test_enabled", "0"),
+    ]:
+        device.shell(f"settings put global {setting} {value}", timeout=10)
+    device.shell("settings delete global captive_portal_server", timeout=10)
+    logger.info("Captive portal detection disabled on %s", device.serial)
+
+
+def _disable_play_updates(device: AdbDevice):
+    """Stop Google Play from pushing background updates on the test emulator.
+
+    Finsky (Play Store) kicks off large GMS/Play package downloads in the
+    background. Mid-test that floods logcat — rotating out the app's tracing
+    lines the SyncWatcher needs — and competes for the emulated network,
+    aggravating the intermittent drops. The tests don't use Play Store, so
+    disable it on boot.
+    """
+    device.shell("pm disable-user --user 0 com.android.vending 2>/dev/null || true", timeout=10)
+    logger.info("Play Store disabled on %s", device.serial)
+
+
 def _account_exists(device: AdbDevice) -> bool:
     """Check if a Nextcloud account exists on the device."""
     out = device.shell("dumpsys account 2>/dev/null | grep 'type=nextcloud' || true")
@@ -144,16 +191,21 @@ def _verify_nextcloud_account(device: AdbDevice):
 
 
 @pytest.fixture
-def reset_state(serial_a, serial_b, oracle):
+def reset_state(serial_a, oracle):
+    """Reset device A and the shared Drive folder before a test.
+
+    Deliberately does NOT touch device B: single-device tests must not drag
+    a second emulator into the session. Two-device tests additionally request
+    reset_state_b to reset B.
+    """
     nextcloud.reset_bruteforce()
-    for serial in [serial_a, serial_b]:
-        adb = AdbDevice(serial)
-        _ensure_apk(adb)
-        _enable_tracing(adb)
-        _ensure_local_folder(adb)
-        _clear_sync_state(adb)
-        adb.shell("am force-stop com.google.android.documentsui || true")
-    _verify_nextcloud_account(AdbDevice(serial_a))
+    adb = AdbDevice(serial_a)
+    _ensure_apk(adb)
+    _enable_tracing(adb)
+    _ensure_local_folder(adb)
+    _clear_sync_state(adb)
+    adb.shell("am force-stop com.google.android.documentsui || true")
+    _verify_nextcloud_account(adb)
     nextcloud._occ(["files:scan", "--all"], check=False)
     try:
         oracle.clear_all()
@@ -163,6 +215,19 @@ def reset_state(serial_a, serial_b, oracle):
     nextcloud.purge_drive()
     time.sleep(2)
     logger.info("Test state reset complete")
+
+
+@pytest.fixture
+def reset_state_b(serial_b):
+    """Reset device B only (used by two-device tests; boots B on demand)."""
+    adb = AdbDevice(serial_b)
+    _ensure_apk(adb)
+    _enable_tracing(adb)
+    _ensure_local_folder(adb)
+    _clear_sync_state(adb)
+    adb.shell("am force-stop com.google.android.documentsui || true")
+    _verify_nextcloud_account(adb)
+    logger.info("Device B state reset complete")
 
 
 def _clear_sync_state(device: AdbDevice):
