@@ -80,9 +80,11 @@ class DownloadEngine @Inject constructor(
         remoteCache: Map<String, List<DocumentFile>>? = null,
     ): List<String> {
         val remoteNames = driveFileManager.listFileNames(treeUri, docId, remoteCache).toSet()
-        return doc.pages
+        val missing = doc.pages
             .map { it.filename }
             .filter { it !in remoteNames } +
             if ("metadata.json" !in remoteNames) listOf("metadata.json") else emptyList()
+        Tracing.d(Category.DRIVE_FILES, TAG, "checkFiles: docId=$docId pages=${doc.pages.size} remote=${remoteNames.size} missing=$missing")
+        return missing
     }
 }

@@ -2,6 +2,8 @@ package com.picpocket.app.drive.sync
 
 import com.picpocket.app.data.store.DocumentStore
 import com.picpocket.app.data.store.StoredDocument
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,6 +36,7 @@ class ConflictResolver @Inject constructor(
 
     suspend fun detectConflicts(localDocs: List<StoredDocument>, remoteDocs: List<DownloadEngine.RemoteDocument>) {
         conflicts.clear()
+        Tracing.d(Category.DRIVE_API, TAG, "detectConflicts: scanning ${localDocs.size} local vs ${remoteDocs.size} remote")
         for (local in localDocs) {
             val remote = remoteDocs.find { it.docId == local.id }
             if (remote == null || remote.isDeleted || remote.metadata == null) continue
@@ -44,6 +47,7 @@ class ConflictResolver @Inject constructor(
             if (localVersion != remoteVersion) {
                 val olderIsAncestor = localVersion == remoteVersion - 1 || remoteVersion == localVersion - 1
                 if (!olderIsAncestor && localVersion > 0 && remoteVersion > 0) {
+                    Tracing.d(Category.DRIVE_API, TAG, "detectConflicts: doc=${local.id} localV=$localVersion remoteV=$remoteVersion")
                     conflicts.add(
                         ConflictInfo(
                             docId = local.id,
@@ -79,5 +83,9 @@ class ConflictResolver @Inject constructor(
         if (idx >= 0) {
             conflicts.removeAt(idx)
         }
+    }
+
+    companion object {
+        private const val TAG = "ConflictResolver"
     }
 }

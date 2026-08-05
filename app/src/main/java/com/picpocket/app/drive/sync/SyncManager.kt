@@ -298,6 +298,7 @@ class SyncManager @Inject constructor(
 
     private suspend fun downloadFullDocument(remote: DownloadEngine.RemoteDocument) {
         val meta = remote.metadata ?: return
+        Tracing.d(Category.DRIVE_FILES, TAG, "downloadFullDocument: doc=${remote.docId} files=${remote.fileNames.size} syncVersion=${meta.syncVersion}")
         documentStore.writeMetadata(meta.id, meta)
 
         val treeUri = localDriveIndex.getRootTreeUri()
