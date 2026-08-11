@@ -33,14 +33,12 @@ class SyncSmokeTest {
     private val localDriveIndex = mockk<LocalDriveIndex>()
     private val driveConnectivityChecker = mockk<com.picpocket.app.drive.DriveConnectivityChecker>()
     private val defaultSyncScheduler = mockk<DefaultSyncScheduler>()
-    private val conflictResolver = mockk<ConflictResolver>()
     private val deviceRegistry = mockk<DeviceRegistry>()
     private val driveFileManager = mockk<DriveFileManager>()
     private val encryptionManager = mockk<EncryptionManager>()
     private val retryHandler = mockk<RetryHandler>()
     private val syncSettings = mockk<SyncSettings>()
     private val context = mockk<android.content.Context>()
-    private val journal = mockk<SyncJournal>(relaxed = true)
     private val syncMutex = mockk<SyncMutex>()
 
     private lateinit var syncManager: SyncManager
@@ -54,16 +52,11 @@ class SyncSmokeTest {
         every { localDriveIndex.getRootFolderId() } returns ""
         every { localDriveIndex.getRootTreeUri() } returns ""
         every { localDriveIndex.hasValidFolder() } returns true
+        every { localDriveIndex.passphraseCount } returns 0
         every { defaultSyncScheduler.setSyncCallback(any()) } returns Unit
-        every { journal.entriesFromCheckpoint() } returns emptyList()
-        every { journal.isEmpty() } returns true
-        every { journal.advanceCheckpoint() } returns Unit
-        every { journal.truncate() } returns Unit
         coEvery { retryHandler.waitBeforeRetry() } returns Unit
         coEvery { retryHandler.onSuccess() } returns Unit
         coEvery { retryHandler.onFailure() } returns Unit
-        coEvery { conflictResolver.detectConflicts(any(), any()) } returns Unit
-        every { conflictResolver.getActiveConflicts() } returns emptyList()
         coEvery { deviceRegistry.detectOrphans(any(), any(), any()) } returns Unit
         every { documentRepository.notifyDocumentsChanged() } returns Unit
         coEvery { deviceRegistry.syncRegistryFromDrive() } returns Unit
@@ -84,13 +77,11 @@ class SyncSmokeTest {
             localDriveIndex,
             driveConnectivityChecker,
             defaultSyncScheduler,
-            conflictResolver,
             driveFileManager,
             deviceRegistry,
             encryptionManager,
             retryHandler,
             syncSettings,
-            journal,
             syncMutex,
             context,
         )
@@ -100,7 +91,6 @@ class SyncSmokeTest {
     fun `sync setup works end to end`() = runTest {
         coEvery { documentStore.listDocuments() } returns Result.success(emptyList())
         coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
-        coEvery { conflictResolver.detectConflicts(emptyList(), emptyList()) } returns Unit
         coEvery { deviceRegistry.detectOrphans(emptyList(), emptyList(), any()) } returns Unit
 
         syncManager.performSync()

@@ -1,17 +1,24 @@
 package com.picpocket.app.drive.sync
 
 import android.content.Context
+import android.content.ContentResolver
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.data.store.MetadataNaming
 import com.picpocket.app.data.store.StoredDocument
 import com.picpocket.app.util.MainCoroutineRule
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -20,6 +27,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.ByteArrayInputStream
 
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
@@ -48,6 +56,11 @@ class DeviceRegistryTest {
         registry = DeviceRegistry(driveFileManager, documentStore, localDriveIndex, context)
     }
 
+    @After
+    fun tearDown() {
+        unmockkStatic(DocumentFile::class)
+    }
+
     @Test
     fun `detectOrphans identifies own deletion`() = runTest {
         every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
@@ -58,6 +71,8 @@ class DeviceRegistryTest {
             docId = "doc-1",
             fileNames = listOf(".deleted"),
             metadata = null,
+            version = 0,
+            passphrase = 0,
             isDeleted = true,
         )
         val tombstone = TombstoneData(deletedAt = 300L, byDevice = "device-1", acknowledgedBy = listOf("device-1"))
@@ -87,6 +102,8 @@ class DeviceRegistryTest {
             docId = "doc-1",
             fileNames = listOf(".deleted"),
             metadata = null,
+            version = 0,
+            passphrase = 0,
             isDeleted = true,
         )
         val tombstone = TombstoneData(deletedAt = 300L, byDevice = "device-1", acknowledgedBy = listOf("device-1"))
@@ -112,6 +129,8 @@ class DeviceRegistryTest {
             docId = "doc-1",
             fileNames = listOf(".deleted"),
             metadata = null,
+            version = 0,
+            passphrase = 0,
             isDeleted = true,
         )
         val tombstone = TombstoneData(deletedAt = 300L, byDevice = "unknown-device", acknowledgedBy = listOf("unknown-device"))
@@ -135,6 +154,8 @@ class DeviceRegistryTest {
             docId = "doc-1",
             fileNames = listOf("page_001.jpg"),
             metadata = null,
+            version = 0,
+            passphrase = 0,
             isDeleted = false,
         )
 
@@ -152,6 +173,8 @@ class DeviceRegistryTest {
             docId = "doc-999",
             fileNames = listOf(".deleted"),
             metadata = null,
+            version = 0,
+            passphrase = 0,
             isDeleted = true,
         )
 
@@ -167,6 +190,8 @@ class DeviceRegistryTest {
             docId = "doc-1",
             fileNames = listOf(".deleted"),
             metadata = null,
+            version = 0,
+            passphrase = 0,
             isDeleted = true,
         )
 
@@ -175,24 +200,31 @@ class DeviceRegistryTest {
     }
 
     @Test
-    fun `keepOrphan re-uploads doc by setting syncVersion to 0`() = runTest {
+    fun `keepOrphan deletes tombstone and bumps local version above remote`() = runTest {
         every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
         every { localDriveIndex.getLocalDeviceId() } returns "device-1"
         every { localDriveIndex.getDevices() } returns mapOf("device-1" to DeviceInfo("My Phone", 100L, 200L))
         coEvery { documentStore.readMetadata("doc-1") } returns Result.success(localDoc)
-        coEvery { documentStore.writeMetadata("doc-1", any()) } returns Result.success(Unit)
+        coEvery { documentStore.metadataVersion("doc-1") } returns 5
+        coEvery { documentStore.metadataPassphrase("doc-1") } returns 0
+        coEvery { driveFileManager.listFileNames("content://tree/", "doc-1") } returns
+            listOf(MetadataNaming.name(3, 0), "abc123.jpg")
+        coEvery { documentStore.writeMetadataAt("doc-1", localDoc, 6, 0) } returns Result.success(Unit)
         coEvery { driveFileManager.readFile("content://tree/", "doc-1", ".deleted") } returns
             json.encodeToString(TombstoneData(300L, "device-1", listOf("device-1"))).toByteArray(Charsets.UTF_8)
         coEvery { driveFileManager.deleteFileByName("content://tree/", "doc-1", ".deleted") } returns true
 
-        val remote = DownloadEngine.RemoteDocument("doc-1", listOf(".deleted"), null, true)
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1", fileNames = listOf(".deleted"), metadata = null,
+            version = 0, passphrase = 0, isDeleted = true,
+        )
         registry.detectOrphans(listOf(localDoc), listOf(remote))
         assertEquals(1, registry.getOrphans().size)
 
         registry.keepOrphan("doc-1")
 
         coVerify { driveFileManager.deleteFileByName("content://tree/", "doc-1", ".deleted") }
-        coVerify { documentStore.writeMetadata("doc-1", any()) }
+        coVerify { documentStore.writeMetadataAt("doc-1", localDoc, 6, 0) }
         assertTrue(registry.getOrphans().isEmpty())
     }
 
@@ -206,7 +238,10 @@ class DeviceRegistryTest {
             json.encodeToString(TombstoneData(300L, "device-2", listOf("device-2"))).toByteArray(Charsets.UTF_8)
         coEvery { driveFileManager.writeFile(any(), any(), any(), any(), any()) } returns WriteOutcome.Verified
 
-        val remote = DownloadEngine.RemoteDocument("doc-1", listOf(".deleted"), null, true)
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1", fileNames = listOf(".deleted"), metadata = null,
+            version = 0, passphrase = 0, isDeleted = true,
+        )
         registry.detectOrphans(listOf(localDoc), listOf(remote))
         assertEquals(1, registry.getOrphans().size)
 
@@ -229,7 +264,10 @@ class DeviceRegistryTest {
             json.encodeToString(TombstoneData(300L, "device-1", listOf("device-1"))).toByteArray(Charsets.UTF_8)
         coEvery { driveFileManager.writeFile(any(), any(), any(), any(), any()) } returns WriteOutcome.Verified
 
-        val remote = DownloadEngine.RemoteDocument("doc-1", listOf(".deleted"), null, true)
+        val remote = DownloadEngine.RemoteDocument(
+            docId = "doc-1", fileNames = listOf(".deleted"), metadata = null,
+            version = 0, passphrase = 0, isDeleted = true,
+        )
         registry.detectOrphans(listOf(localDoc), listOf(remote))
         assertEquals(1, registry.getOrphans().size)
 
@@ -256,6 +294,119 @@ class DeviceRegistryTest {
     fun `syncRegistryFromDrive does nothing when treeUri is blank`() = runTest {
         every { localDriveIndex.getRootTreeUri() } returns ""
         registry.syncRegistryFromDrive()
+    }
+
+    @Test
+    fun `syncRegistryToDrive returns after verified write`() = runTest {
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+        every { localDriveIndex.getLocalDeviceId() } returns "device-1"
+        every { localDriveIndex.getDevices() } returns mapOf("device-1" to DeviceInfo("My Phone", 100L, 200L))
+        every { localDriveIndex.setDevice(any(), any()) } returns Unit
+        coEvery { driveFileManager.writeRootFile("content://tree/", "devices.json", any()) } returns WriteOutcome.Verified
+
+        registry.syncRegistryToDrive(encrypted = true)
+
+        coVerify(exactly = 1) { driveFileManager.writeRootFile("content://tree/", "devices.json", any()) }
+    }
+
+    @Test
+    fun `syncRegistryToDrive retries then throws RegistryWriteException with reason`() = runTest {
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+        every { localDriveIndex.getLocalDeviceId() } returns "device-1"
+        every { localDriveIndex.getDevices() } returns mapOf("device-1" to DeviceInfo("My Phone", 100L, 200L))
+        every { localDriveIndex.setDevice(any(), any()) } returns Unit
+        coEvery { driveFileManager.writeRootFile("content://tree/", "devices.json", any()) } returns
+            WriteOutcome.Failed("write not settled")
+
+        val ex = runCatching { registry.syncRegistryToDrive(encrypted = true) }.exceptionOrNull()
+
+        assertTrue(ex is RegistryWriteException)
+        assertTrue(ex!!.message!!.contains("write not settled"))
+        coVerify(exactly = 3) { driveFileManager.writeRootFile("content://tree/", "devices.json", any()) }
+    }
+
+    private fun stubFromDriveRoot() {
+        val contentResolver = mockk<ContentResolver>(relaxed = true)
+        every { context.contentResolver } returns contentResolver
+
+        val root = mockk<DocumentFile>()
+        every { root.uri } returns Uri.parse("content://tree/")
+        every { root.listFiles() } returns arrayOf()
+
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, Uri.parse("content://tree/")) } returns root
+    }
+
+    @Test
+    fun `syncRegistryFromDrive throws CorruptRegistryException when registry is undecodable`() = runTest {
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+
+        val contentResolver = mockk<ContentResolver>(relaxed = true)
+        every { context.contentResolver } returns contentResolver
+
+        val registryFile = mockk<DocumentFile>()
+        every { registryFile.name } returns "devices.json"
+        every { registryFile.uri } returns Uri.parse("content://tree/devices.json")
+        every { contentResolver.openInputStream(any()) } returns
+            ByteArrayInputStream("{ not valid json".toByteArray(Charsets.UTF_8))
+
+        val root = mockk<DocumentFile>()
+        every { root.uri } returns Uri.parse("content://tree/")
+        every { root.listFiles() } returns arrayOf(registryFile)
+
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, Uri.parse("content://tree/")) } returns root
+
+        val ex = runCatching { registry.syncRegistryFromDrive() }.exceptionOrNull()
+
+        assertTrue("expected CorruptRegistryException but was ${ex?.javaClass?.simpleName}", ex is CorruptRegistryException)
+    }
+
+    @Test
+    fun `syncRegistryFromDrive recovers after transient empty read`() = runTest {
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+        every { localDriveIndex.getLocalDeviceId() } returns "local-device"
+        every { localDriveIndex.getDevices() } returns emptyMap()
+        every { localDriveIndex.setDevice(any(), any()) } returns Unit
+
+        val contentResolver = mockk<ContentResolver>(relaxed = true)
+        every { context.contentResolver } returns contentResolver
+
+        val registryJson = json.encodeToString(
+            SharedDeviceRegistry(
+                devices = listOf(SharedDevice(id = "dev1", name = "A", lastSeen = 123L)),
+                encrypted = true,
+            ),
+        )
+        val registryFile = mockk<DocumentFile>()
+        every { registryFile.name } returns "devices.json"
+        every { registryFile.uri } returns Uri.parse("content://tree/devices.json")
+        every { contentResolver.openInputStream(any()) } returnsMany listOf(
+            ByteArrayInputStream(ByteArray(0)),
+            ByteArrayInputStream(registryJson.toByteArray(Charsets.UTF_8)),
+        )
+
+        val root = mockk<DocumentFile>()
+        every { root.uri } returns Uri.parse("content://tree/")
+        every { root.listFiles() } returns arrayOf(registryFile)
+
+        mockkStatic(DocumentFile::class)
+        every { DocumentFile.fromTreeUri(context, Uri.parse("content://tree/")) } returns root
+
+        registry.syncRegistryFromDrive()
+
+        assertTrue("expected remoteEncrypted to be set after retry", registry.remoteEncrypted)
+    }
+
+    @Test
+    fun `syncRegistryFromDrive returns when registry file is absent`() = runTest {
+        every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
+
+        stubFromDriveRoot()
+
+        registry.syncRegistryFromDrive()
+
+        assertFalse(registry.remoteEncrypted)
     }
 
     @Test

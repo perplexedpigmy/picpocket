@@ -1,7 +1,7 @@
 package com.picpocket.app.drive.sync
 
-import android.content.Context
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.data.store.MetadataNaming
 import com.picpocket.app.data.store.StoredDocument
 import com.picpocket.app.data.store.StoredPage
 import com.picpocket.app.util.MainCoroutineRule
@@ -30,15 +30,14 @@ class UploadEngineTest {
     private val driveFileManager = mockk<DriveFileManager>()
     private val documentStore = mockk<DocumentStore>()
     private val localDriveIndex = mockk<LocalDriveIndex>()
-    private val context = mockk<Context>()
 
     private lateinit var uploadEngine: UploadEngine
 
     @Before
     fun setUp() {
         every { localDriveIndex.getRootTreeUri() } returns "content://tree/"
-        every { localDriveIndex.setDocumentInfo(any(), any()) } returns Unit
-        uploadEngine = UploadEngine(driveFileManager, documentStore, localDriveIndex, context)
+        every { localDriveIndex.passphraseCount } returns 1
+        uploadEngine = UploadEngine(driveFileManager, documentStore, localDriveIndex)
     }
 
     private fun doc(id: String, pages: List<StoredPage>): StoredDocument =
@@ -51,45 +50,88 @@ class UploadEngineTest {
     }
 
     @Test
-    fun `uploadDocument returns false and does not bump version when page write fails`() = runTest {
-        val d = doc("doc-1", listOf(StoredPage(pageNumber = 1, filename = "page_001.jpg", createdAt = 0L)))
+    fun `uploadNewDocument returns false when page write fails`() = runTest {
+        val d = doc("doc-1", listOf(StoredPage(pageNumber = 1, filename = "abc123.jpg", createdAt = 0L)))
+        coEvery { documentStore.readMetadata("doc-1") } returns Result.success(d)
+        coEvery { documentStore.metadataVersion("doc-1") } returns 0
         coEvery { driveFileManager.createDocFolder("content://tree/", "doc-1") } returns true
-        every { documentStore.pageFile("doc-1", "page_001.jpg") } returns tempPage()
+        every { documentStore.pageFile("doc-1", "abc123.jpg") } returns tempPage()
         coEvery { driveFileManager.writeFile(any(), any(), any(), any()) } returns WriteOutcome.Failed("boom")
-        every { localDriveIndex.getDocumentInfo("doc-1") } returns DocumentDriveInfo()
 
-        val result = uploadEngine.uploadDocument(d)
+        val result = uploadEngine.uploadNewDocument("doc-1")
 
         assertFalse(result)
-        coVerify(inverse = true) { localDriveIndex.setDocumentInfo(any(), any()) }
     }
 
     @Test
-    fun `uploadDocument returns false and does not bump version when metadata write fails`() = runTest {
+    fun `uploadNewDocument returns false when metadata write fails`() = runTest {
         val d = doc("doc-1", emptyList())
+        coEvery { documentStore.readMetadata("doc-1") } returns Result.success(d)
+        coEvery { documentStore.metadataVersion("doc-1") } returns 0
         coEvery { driveFileManager.createDocFolder(any(), any()) } returns true
-        coEvery { driveFileManager.writeFile(any(), any(), eq("metadata.json"), any()) } returns WriteOutcome.Failed("meta boom")
-        every { localDriveIndex.getDocumentInfo("doc-1") } returns DocumentDriveInfo()
+        coEvery { driveFileManager.writeFile(any(), any(), eq(MetadataNaming.name(0, 1)), any()) } returns WriteOutcome.Failed("meta boom")
 
-        val result = uploadEngine.uploadDocument(d)
+        val result = uploadEngine.uploadNewDocument("doc-1")
 
         assertFalse(result)
-        coVerify(inverse = true) { localDriveIndex.setDocumentInfo(any(), any()) }
     }
 
     @Test
-    fun `uploadDocument returns true and bumps version only when all writes verified`() = runTest {
-        val d = doc("doc-1", listOf(StoredPage(pageNumber = 1, filename = "page_001.jpg", createdAt = 0L)))
+    fun `uploadNewDocument verifies pages, writes renamed metadata and records local version`() = runTest {
+        val d = doc("doc-1", listOf(StoredPage(pageNumber = 1, filename = "abc123.jpg", createdAt = 0L)))
+        coEvery { documentStore.readMetadata("doc-1") } returns Result.success(d)
+        coEvery { documentStore.metadataVersion("doc-1") } returns 0
         coEvery { driveFileManager.createDocFolder(any(), any()) } returns true
-        every { documentStore.pageFile("doc-1", "page_001.jpg") } returns tempPage()
+        every { documentStore.pageFile("doc-1", "abc123.jpg") } returns tempPage()
         coEvery { driveFileManager.writeFile(any(), any(), any(), any()) } returns WriteOutcome.Verified
-        val info = DocumentDriveInfo()
-        every { localDriveIndex.getDocumentInfo("doc-1") } returns info
+        coEvery { driveFileManager.listFileNames("content://tree/", "doc-1") } returns emptyList()
+        coEvery { documentStore.writeMetadataAt("doc-1", d, 0, 1) } returns Result.success(Unit)
 
-        val result = uploadEngine.uploadDocument(d)
+        val result = uploadEngine.uploadNewDocument("doc-1")
 
         assertTrue(result)
-        assertTrue(info.syncVersion == 1)
-        coVerify { localDriveIndex.setDocumentInfo("doc-1", info) }
+        coVerify { driveFileManager.writeFile(any(), any(), eq(MetadataNaming.name(0, 1)), any()) }
+        coVerify { documentStore.writeMetadataAt("doc-1", d, 0, 1) }
+    }
+
+    @Test
+    fun `pushDocument uploads missing pages and deletes unreferenced remote pages`() = runTest {
+        val d = doc("doc-1", listOf(StoredPage(pageNumber = 1, filename = "abc123.jpg", createdAt = 0L)))
+        coEvery { documentStore.readMetadata("doc-1") } returns Result.success(d)
+        coEvery { documentStore.metadataVersion("doc-1") } returns 4
+        coEvery { driveFileManager.createDocFolder(any(), any()) } returns true
+        every { documentStore.pageFile("doc-1", "abc123.jpg") } returns tempPage()
+        coEvery { driveFileManager.listFileNames("content://tree/", "doc-1") } returns listOf("stale.jpg", MetadataNaming.name(3, 1))
+        coEvery { driveFileManager.writeFile(any(), any(), any(), any()) } returns WriteOutcome.Verified
+        coEvery { driveFileManager.deleteFileByName(any(), any(), any()) } returns true
+        coEvery { documentStore.writeMetadataAt("doc-1", d, 4, 1) } returns Result.success(Unit)
+
+        val result = uploadEngine.pushDocument("doc-1", 1)
+
+        assertTrue(result)
+        coVerify { driveFileManager.writeFile(any(), any(), eq("abc123.jpg"), any()) }
+        coVerify { driveFileManager.deleteFileByName("content://tree/", "doc-1", "stale.jpg") }
+        coVerify { driveFileManager.deleteFileByName("content://tree/", "doc-1", MetadataNaming.name(3, 1)) }
+        coVerify { documentStore.writeMetadataAt("doc-1", d, 4, 1) }
+    }
+
+    @Test
+    fun `forceReEncryptDocument re-uploads every page under current count`() = runTest {
+        val d = doc("doc-1", listOf(StoredPage(pageNumber = 1, filename = "abc123.jpg", createdAt = 0L)))
+        coEvery { documentStore.readMetadata("doc-1") } returns Result.success(d)
+        coEvery { documentStore.metadataVersion("doc-1") } returns 2
+        coEvery { driveFileManager.createDocFolder(any(), any()) } returns true
+        every { documentStore.pageFile("doc-1", "abc123.jpg") } returns tempPage()
+        coEvery { driveFileManager.writeFile(any(), any(), any(), any()) } returns WriteOutcome.Verified
+        coEvery { driveFileManager.listFileNames("content://tree/", "doc-1") } returns listOf("abc123.jpg", MetadataNaming.name(2, 0))
+        coEvery { driveFileManager.deleteFileByName(any(), any(), any()) } returns true
+        coEvery { documentStore.writeMetadataAt("doc-1", d, 2, 1) } returns Result.success(Unit)
+
+        val result = uploadEngine.forceReEncryptDocument("doc-1")
+
+        assertTrue(result)
+        coVerify { driveFileManager.writeFile(any(), any(), eq("abc123.jpg"), any()) }
+        coVerify { driveFileManager.deleteFileByName("content://tree/", "doc-1", MetadataNaming.name(2, 0)) }
+        coVerify { documentStore.writeMetadataAt("doc-1", d, 2, 1) }
     }
 }

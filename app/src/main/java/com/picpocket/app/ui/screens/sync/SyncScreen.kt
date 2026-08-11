@@ -214,31 +214,12 @@ fun SyncScreen(
                             Text("Sync Management", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Resolve conflicts and manage deletions",
+                                "Manage deletions",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Spacer(Modifier.height(8.dp))
-                            if (state.trashCount > 0 || state.removedByOthersCount > 0 || state.conflictCount > 0) {
-                                if (state.conflictCount > 0) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { }
-                                            .padding(vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Sync,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp),
-                                        )
-                                        Spacer(Modifier.width(12.dp))
-                                        Text("${state.conflictCount} Conflicts", style = MaterialTheme.typography.bodyMedium)
-                                    }
-                                    HorizontalDivider()
-                                }
+                            if (state.trashCount > 0 || state.removedByOthersCount > 0) {
                                 if (state.trashCount > 0) {
                                     Row(
                                         modifier = Modifier

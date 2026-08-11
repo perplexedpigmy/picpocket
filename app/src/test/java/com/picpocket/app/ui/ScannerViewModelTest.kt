@@ -5,8 +5,6 @@ import android.graphics.Bitmap
 import android.net.Uri
 import com.picpocket.app.data.FakeDocumentRepository
 import com.picpocket.app.data.store.DocumentStore
-import com.picpocket.app.drive.sync.SyncJournal
-import io.mockk.mockk
 import com.picpocket.app.data.workflow.WorkflowExecutor
 import com.picpocket.app.domain.filter.BinarizeFilter
 import com.picpocket.app.domain.filter.BrightnessFilter
@@ -47,14 +45,13 @@ class ScannerViewModelTest {
 
     private lateinit var repo: FakeDocumentRepository
     private lateinit var ocrManager: OcrManager
-    private val syncJournal = mockk<SyncJournal>(relaxed = true)
     private lateinit var viewModel: ScannerViewModel
 
     @Before
     fun setUp() {
         repo = FakeDocumentRepository()
         val app = RuntimeEnvironment.getApplication() as Application
-        ocrManager = OcrManager(FakeOcrEngine(), DocumentStore(app, syncJournal))
+        ocrManager = OcrManager(FakeOcrEngine(), DocumentStore(app))
         val pipeline = FilterPipeline(
             GrayscaleFilter(), ContrastFilter(), BrightnessFilter(),
             SharpenFilter(), BinarizeFilter(),

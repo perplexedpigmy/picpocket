@@ -4,7 +4,6 @@ import android.app.Application
 import android.content.Context
 import com.picpocket.app.data.FakeDocumentRepository
 import com.picpocket.app.data.store.DocumentStore
-import com.picpocket.app.drive.sync.SyncJournal
 import io.mockk.mockk
 import com.picpocket.app.domain.ocr.FakeOcrEngine
 import com.picpocket.app.domain.ocr.OcrManager
@@ -34,17 +33,16 @@ class DocumentDetailViewModelTest {
 
     private lateinit var repo: FakeDocumentRepository
     private lateinit var viewModel: DocumentDetailViewModel
-    private val syncJournal = mockk<SyncJournal>(relaxed = true)
     private var documentId: String = ""
 
     @Before
-    fun setUp() = runTest {
+    fun setUp() = runTest(coroutineRule.dispatcher) {
         repo = FakeDocumentRepository()
         documentId = repo.createDocument("My Document").getOrThrow()
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         val app = RuntimeEnvironment.getApplication() as Application
-        val store = DocumentStore(app, syncJournal)
+        val store = DocumentStore(app)
         viewModel = DocumentDetailViewModel(
             app,
             repo,

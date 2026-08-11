@@ -87,20 +87,22 @@ class TracingViewModel @Inject constructor(
                 for (f in files.sortedBy { it.name }) {
                     Tracing.v(Category.STORE_STATE, TAG, "    ${f.name}  ${f.length()} bytes")
                 }
-                val metaFile = java.io.File(docDir, "metadata.json")
-                if (metaFile.exists()) {
+                val metaFile = docDir.listFiles()
+                    ?.filter { com.picpocket.app.data.store.MetadataNaming.isMetadata(it.name) }
+                    ?.maxByOrNull { com.picpocket.app.data.store.MetadataNaming.parse(it.name)?.first ?: 0 }
+                if (metaFile != null) {
                     try {
                         val raw = metaFile.readText()
-                        Tracing.d(Category.STORE_STATE, TAG, "    --- metadata.json content ---")
+                        Tracing.d(Category.STORE_STATE, TAG, "    --- ${metaFile.name} content ---")
                         for (line in raw.lines()) {
                             Tracing.v(Category.STORE_STATE, TAG, "    | $line")
                         }
-                        Tracing.d(Category.STORE_STATE, TAG, "    --- end metadata.json ---")
+                        Tracing.d(Category.STORE_STATE, TAG, "    --- end ${metaFile.name} ---")
                     } catch (e: Exception) {
-                        Tracing.w(Category.STORE_STATE, TAG, "    metadata.json read error: ${e.message}")
+                        Tracing.w(Category.STORE_STATE, TAG, "    ${metaFile.name} read error: ${e.message}")
                     }
                 } else {
-                    Tracing.d(Category.STORE_STATE, TAG, "    [missing metadata.json]")
+                    Tracing.d(Category.STORE_STATE, TAG, "    [missing metadata]")
                 }
             }
             val indexFile = java.io.File(app.filesDir, "drive_index.json")
@@ -115,12 +117,6 @@ class TracingViewModel @Inject constructor(
                 }
             } else {
                 Tracing.i(Category.STORE_STATE, TAG, "No drive_index.json found")
-            }
-            val journalFile = java.io.File(app.filesDir, "sync_journal.json")
-            if (journalFile.exists()) {
-                Tracing.i(Category.STORE_STATE, TAG, "sync_journal.json: ${journalFile.length()} bytes")
-            } else {
-                Tracing.i(Category.STORE_STATE, TAG, "No sync_journal.json found")
             }
             Tracing.i(Category.STORE_STATE, TAG, "=== End Dump ===")
         }

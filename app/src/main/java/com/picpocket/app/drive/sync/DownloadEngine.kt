@@ -4,6 +4,7 @@ import com.picpocket.app.debug.Category
 import com.picpocket.app.debug.Tracing
 import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.data.store.MetadataNaming
 import com.picpocket.app.data.store.StoredDocument
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -24,6 +25,8 @@ class DownloadEngine @Inject constructor(
         val docId: String,
         val fileNames: List<String>,
         val metadata: StoredDocument?,
+        val version: Int,
+        val passphrase: Int,
         val isDeleted: Boolean,
     )
 
@@ -39,8 +42,13 @@ class DownloadEngine @Inject constructor(
             val fileNames = driveFileManager.listFileNames(treeUri, docId, remoteCache)
             Tracing.d(Category.DRIVE_FILES, TAG, "listRemoteDocuments: docId=$docId fileNames=$fileNames")
             val hasDeleted = ".deleted" in fileNames
-            val metadata = if ("metadata.json" in fileNames && !hasDeleted) {
-                val data = driveFileManager.readMetadataJson(treeUri, docId, remoteCache)
+
+            val metaEntry = fileNames
+                .mapNotNull { name -> MetadataNaming.parse(name)?.let { vp -> name to vp } }
+                .maxByOrNull { it.second.first }
+
+            val metadata = if (metaEntry != null && !hasDeleted) {
+                val data = driveFileManager.readMetadataJson(treeUri, docId, metaEntry.first, remoteCache)
                 Tracing.d(Category.DRIVE_FILES, TAG, "listRemoteDocuments: docId=$docId metadata=${data?.size} bytes")
                 if (data != null) {
                     try {
@@ -54,8 +62,10 @@ class DownloadEngine @Inject constructor(
 
             RemoteDocument(
                 docId = docId,
-                fileNames = fileNames.filter { it != ".deleted" && it != "metadata.json" },
+                fileNames = fileNames.filter { it != ".deleted" && !MetadataNaming.isMetadata(it) },
                 metadata = metadata,
+                version = metaEntry?.second?.first ?: 0,
+                passphrase = metaEntry?.second?.second ?: 0,
                 isDeleted = hasDeleted,
             )
         }
@@ -75,16 +85,32 @@ class DownloadEngine @Inject constructor(
         return driveFileManager.readFile(treeUri, docId, ".deleted", remoteCache)
     }
 
-    suspend fun checkFiles(
-        treeUri: String, docId: String, doc: StoredDocument,
+    suspend fun pullDocument(
+        remote: RemoteDocument,
         remoteCache: Map<String, List<DocumentFile>>? = null,
-    ): List<String> {
-        val remoteNames = driveFileManager.listFileNames(treeUri, docId, remoteCache).toSet()
-        val missing = doc.pages
-            .map { it.filename }
-            .filter { it !in remoteNames } +
-            if ("metadata.json" !in remoteNames) listOf("metadata.json") else emptyList()
-        Tracing.d(Category.DRIVE_FILES, TAG, "checkFiles: docId=$docId pages=${doc.pages.size} remote=${remoteNames.size} missing=$missing")
-        return missing
+    ): Boolean {
+        val meta = remote.metadata ?: return false
+        val treeUri = localDriveIndex.getRootTreeUri()
+        if (treeUri.isBlank()) return false
+
+        for (filename in remote.fileNames) {
+            val data = driveFileManager.readFile(treeUri, remote.docId, filename, remoteCache)
+            if (data != null) {
+                val pageFile = documentStore.pageFile(remote.docId, filename)
+                pageFile.parentFile?.mkdirs()
+                pageFile.writeBytes(data)
+            }
+        }
+
+        val dir = documentStore.documentDir(remote.docId)
+        val remoteSet = remote.fileNames.toSet()
+        for (f in dir.listFiles() ?: emptyArray()) {
+            val name = f.name
+            if (name !in remoteSet && !MetadataNaming.isMetadata(name) && !name.endsWith(".tmp")) {
+                f.delete()
+            }
+        }
+
+        return documentStore.writeMetadataAt(remote.docId, meta, remote.version, remote.passphrase).isSuccess
     }
 }

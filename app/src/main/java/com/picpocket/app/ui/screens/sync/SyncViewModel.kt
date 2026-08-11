@@ -9,7 +9,6 @@ import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.PassphraseStore
 import com.picpocket.app.drive.SyncState
-import com.picpocket.app.drive.sync.ConflictResolver
 import com.picpocket.app.drive.sync.DeviceRegistry
 import com.picpocket.app.drive.sync.LocalDriveIndex
 import com.picpocket.app.drive.sync.RetryHandler
@@ -28,7 +27,6 @@ data class SyncUiState(
     val syncEnabled: Boolean = false,
     val syncState: SyncState = SyncState.Idle,
     val folderName: String = "",
-    val conflictCount: Int = 0,
     val trashCount: Int = 0,
     val removedByOthersCount: Int = 0,
     val encryptionEnabled: Boolean = false,
@@ -52,7 +50,6 @@ class SyncViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val syncSettings: SyncSettings,
     private val localDriveIndex: LocalDriveIndex,
-    private val conflictResolver: ConflictResolver,
     private val deviceRegistry: DeviceRegistry,
     private val retryHandler: RetryHandler,
     private val encryptionManager: EncryptionManager,
@@ -89,7 +86,6 @@ class SyncViewModel @Inject constructor(
                 connectionState = ConnectionState.Connected,
                 folderName = localDriveIndex.getRootFolderName(),
                 syncEnabled = syncSettings.syncEnabled,
-                conflictCount = conflictResolver.getActiveConflicts().size,
                 trashCount = deviceRegistry.getMyDeleted().size,
                 removedByOthersCount = deviceRegistry.getOthersDeleted().size,
                 encryptionEnabled = encryptionManager.isEncryptionEnabled,
@@ -99,6 +95,9 @@ class SyncViewModel @Inject constructor(
 
     fun setEncryptionPassphrase(passphrase: String) {
         if (syncManager.syncState.value is SyncState.Syncing) return
+        if (passphrase != passphraseStore.getPassphrase()) {
+            localDriveIndex.passphraseCount = localDriveIndex.passphraseCount + 1
+        }
         encryptionManager.setPassphrase(passphrase)
         passphraseStore.savePassphrase(passphrase)
         viewModelScope.launch {
@@ -109,10 +108,10 @@ class SyncViewModel @Inject constructor(
 
     fun disableEncryption() {
         if (syncManager.syncState.value is SyncState.Syncing) return
+        localDriveIndex.passphraseCount = localDriveIndex.passphraseCount + 1
         encryptionManager.clearPassphrase()
         passphraseStore.clearPassphrase()
         viewModelScope.launch {
-            syncManager.synthesizeReEncryptPass()
             syncManager.performSync()
         }
         _uiState.update { it.copy(encryptionEnabled = false) }

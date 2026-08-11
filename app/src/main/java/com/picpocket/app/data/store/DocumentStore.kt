@@ -1,8 +1,6 @@
 package com.picpocket.app.data.store
 
 import android.app.Application
-import com.picpocket.app.drive.sync.JournalEntry
-import com.picpocket.app.drive.sync.SyncJournal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -24,8 +22,6 @@ data class StoredDocument(
     val qualityTier: Int = 0,
     val ocrComplete: Boolean = false,
     val pageSize: String? = null,
-    val syncVersion: Int = 0,
-    val syncTimestamp: Long = 0L,
     val syncExclude: Boolean = false,
 )
 
@@ -42,7 +38,6 @@ data class StoredPage(
 @Singleton
 class DocumentStore @Inject constructor(
     private val app: Application,
-    private val syncJournal: SyncJournal,
 ) {
     private val json = Json {
         prettyPrint = true
@@ -55,28 +50,58 @@ class DocumentStore @Inject constructor(
     fun documentDir(documentId: String): File =
         File(documentsRoot, documentId)
 
-    fun metadataFile(documentId: String): File =
-        File(documentDir(documentId), "metadata.json")
-
     fun pageFile(documentId: String, filename: String): File =
         File(documentDir(documentId), filename)
 
+    fun pageFilenameFor(bytes: ByteArray): String =
+        PageNaming.filenameFor(bytes)
+
+    fun metadataFileName(documentId: String): String? {
+        val dir = documentDir(documentId)
+        val files = dir.listFiles() ?: return null
+        return files.mapNotNull { f ->
+            MetadataNaming.parse(f.name)?.let { vp -> f.name to vp }
+        }.maxByOrNull { it.second.first }?.first
+    }
+
+    fun metadataVersion(documentId: String): Int {
+        val name = metadataFileName(documentId) ?: return 0
+        return MetadataNaming.parse(name)?.first ?: 0
+    }
+
+    fun metadataPassphrase(documentId: String): Int {
+        val name = metadataFileName(documentId) ?: return 0
+        return MetadataNaming.parse(name)?.second ?: 0
+    }
+
     suspend fun readMetadata(documentId: String): Result<StoredDocument> = withContext(Dispatchers.IO) {
-        val file = metadataFile(documentId)
-        if (!file.exists()) return@withContext Result.failure(Exception("Document not found: $documentId"))
+        val name = metadataFileName(documentId)
+        if (name == null) return@withContext Result.failure(Exception("Document not found: $documentId"))
+        val file = File(documentDir(documentId), name)
         try {
             Result.success(json.decodeFromString<StoredDocument>(file.readText()))
         } catch (e: Exception) { Result.failure(e) }
     }
 
     suspend fun writeMetadata(documentId: String, doc: StoredDocument): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
+        writeMetadataTo(documentId, doc, metadataVersion(documentId) + 1, metadataPassphrase(documentId))
+    }
+
+    suspend fun writeMetadataAt(documentId: String, doc: StoredDocument, version: Int, passphrase: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        writeMetadataTo(documentId, doc, version, passphrase)
+    }
+
+    private fun writeMetadataTo(documentId: String, doc: StoredDocument, version: Int, passphrase: Int): Result<Unit> {
+        return try {
             val dir = documentDir(documentId)
             dir.mkdirs()
-            val tmp = File(dir, "metadata.json.tmp")
-            val dest = metadataFile(documentId)
+            val name = MetadataNaming.name(version, passphrase)
+            val tmp = File(dir, "$name.tmp")
             tmp.writeText(json.encodeToString(doc))
-            tmp.renameTo(dest)
+            tmp.renameTo(File(dir, name))
+            for (f in dir.listFiles() ?: emptyArray()) {
+                if (f.name != name && MetadataNaming.isMetadata(f.name)) f.delete()
+            }
             Result.success(Unit)
         } catch (e: Exception) { Result.failure(e) }
     }
@@ -97,7 +122,7 @@ class DocumentStore @Inject constructor(
                 qualityTier = qualityTier,
                 pageSize = pageSize,
             )
-            writeMetadata(id, doc).getOrElse { return@withContext Result.failure(it) }
+            writeMetadataAt(id, doc, 0, 0).getOrElse { return@withContext Result.failure(it) }
             Result.success(doc)
         } catch (e: Exception) { Result.failure(e) }
     }
@@ -142,18 +167,18 @@ class DocumentStore @Inject constructor(
         )
         val newDoc = doc.copy(updatedAt = System.currentTimeMillis(), pages = doc.pages)
         writeMetadata(documentId, newDoc)
-        syncJournal.append(JournalEntry.AddPage(documentId, pageNumber, filename, fileSizeBytes))
         Result.success(Unit)
     }
 
     suspend fun removePage(documentId: String, pageNumber: Int): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
+        val removed = doc.pages.filter { it.pageNumber == pageNumber }
         doc.pages.removeAll { it.pageNumber == pageNumber }
         renumberPages(doc)
         writeMetadata(documentId, doc.copy(updatedAt = System.currentTimeMillis()))
-        val pageFile = pageFile(documentId, filenameForPage(pageNumber))
-        pageFile.delete()
-        syncJournal.append(JournalEntry.RemovePage(documentId, pageNumber))
+        for (page in removed) {
+            pageFile(documentId, page.filename).delete()
+        }
         Result.success(Unit)
     }
 
@@ -165,7 +190,6 @@ class DocumentStore @Inject constructor(
             page.copy(pageNumber = index + 1)
         }
         writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
-        syncJournal.append(JournalEntry.ReorderPages(documentId, orderedPageNumbers))
         Result.success(Unit)
     }
 
@@ -175,14 +199,12 @@ class DocumentStore @Inject constructor(
         if (idx < 0) return@withContext Result.failure(Exception("Page $pageNumber not found"))
         doc.pages[idx] = doc.pages[idx].copy(ocrText = ocrText)
         writeMetadata(documentId, doc.copy(pages = doc.pages))
-        syncJournal.append(JournalEntry.UpdatePageOcr(documentId, pageNumber, ocrText))
         Result.success(Unit)
     }
 
     suspend fun updateDocumentName(documentId: String, name: String): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         writeMetadata(documentId, doc.copy(name = name, updatedAt = System.currentTimeMillis()))
-        syncJournal.append(JournalEntry.UpdateDocumentName(documentId, name))
         Result.success(Unit)
     }
 
@@ -194,12 +216,14 @@ class DocumentStore @Inject constructor(
     suspend fun replacePageImage(
         documentId: String,
         pageNumber: Int,
+        filename: String,
         fileSizeBytes: Long,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
         if (idx < 0) return@withContext Result.failure(Exception("Page $pageNumber not found"))
         doc.pages[idx] = doc.pages[idx].copy(
+            filename = filename,
             fileSizeBytes = fileSizeBytes,
             ocrText = null,
         )
@@ -208,7 +232,6 @@ class DocumentStore @Inject constructor(
             ocrComplete = false,
             updatedAt = System.currentTimeMillis(),
         ))
-        syncJournal.append(JournalEntry.ReplacePageImage(documentId, pageNumber, fileSizeBytes))
         Result.success(Unit)
     }
 
@@ -216,9 +239,6 @@ class DocumentStore @Inject constructor(
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
         Result.success(doc.pages.sumOf { it.fileSizeBytes })
     }
-
-    fun filenameForPage(pageNumber: Int): String =
-        "%05d".format(pageNumber)
 
     suspend fun replacePages(documentId: String, keptFilenames: List<String>): Result<List<String>> = withContext(Dispatchers.IO) {
         val doc = readMetadata(documentId).getOrElse { return@withContext Result.failure(it) }
@@ -238,7 +258,6 @@ class DocumentStore @Inject constructor(
         }
         val writeResult = writeMetadata(documentId, doc.copy(pages = updated.toMutableList(), updatedAt = System.currentTimeMillis()))
         writeResult.getOrElse { return@withContext Result.failure(it) }
-        syncJournal.append(JournalEntry.ReplacePages(documentId, keptFilenames))
         Result.success(removed.map { it.filename })
     }
 

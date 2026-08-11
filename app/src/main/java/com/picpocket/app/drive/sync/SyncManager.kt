@@ -9,6 +9,7 @@ import com.picpocket.app.debug.Category
 import com.picpocket.app.debug.Tracing
 import com.picpocket.app.data.repository.DocumentRepository
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.data.store.MetadataNaming
 import com.picpocket.app.drive.DriveAuthManager
 import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.DriveConnectivityChecker
@@ -33,13 +34,11 @@ class SyncManager @Inject constructor(
     private val localDriveIndex: LocalDriveIndex,
     private val driveConnectivityChecker: DriveConnectivityChecker,
     private val defaultSyncScheduler: DefaultSyncScheduler,
-    private val conflictResolver: ConflictResolver,
     private val driveFileManager: DriveFileManager,
     private val deviceRegistry: DeviceRegistry,
     private val encryptionManager: EncryptionManager,
     private val retryHandler: RetryHandler,
     private val syncSettings: SyncSettings,
-    private val journal: SyncJournal,
     private val syncMutex: SyncMutex,
     @ApplicationContext private val context: Context,
 ) {
@@ -96,148 +95,60 @@ class SyncManager @Inject constructor(
             var uploadFailure: String? = null
             withContext(Dispatchers.IO) {
                 retryHandler.waitBeforeRetry()
-                    Tracing.d(Category.DRIVE_API, TAG, "performSync: waitBeforeRetry done")
+                Tracing.d(Category.DRIVE_API, TAG, "performSync: waitBeforeRetry done")
 
-                    val localDocs = documentStore.listDocuments().getOrDefault(emptyList())
-                    Tracing.d(Category.STORE_STATE, TAG, "performSync: localDocs count=${localDocs.size}")
+                val localDocs = documentStore.listDocuments().getOrDefault(emptyList())
+                Tracing.d(Category.STORE_STATE, TAG, "performSync: localDocs count=${localDocs.size}")
 
-                    refreshSafCache()
+                refreshSafCache()
 
-                    Tracing.d(Category.DRIVE_FILES, TAG, "performSync: prefetching remote file tree...")
-                    val remoteCache = driveFileManager.prefetchRemoteFiles(
-                        localDriveIndex.getRootTreeUri()
-                    )
+                Tracing.d(Category.DRIVE_FILES, TAG, "performSync: prefetching remote file tree...")
+                val remoteCache = driveFileManager.prefetchRemoteFiles(
+                    localDriveIndex.getRootTreeUri()
+                )
 
-                    Tracing.d(Category.DRIVE_FILES, TAG, "performSync: listing remote docs...")
-                    val remoteDocs = downloadEngine.listRemoteDocuments(remoteCache)
+                Tracing.d(Category.DRIVE_FILES, TAG, "performSync: listing remote docs...")
+                val remoteDocs = downloadEngine.listRemoteDocuments(remoteCache)
 
-                    deviceRegistry.syncRegistryFromDrive()
+                deviceRegistry.syncRegistryFromDrive()
 
-                    val remoteEncrypted = deviceRegistry.remoteEncrypted
-                    val passphraseSet = encryptionManager.isEncryptionEnabled
-                    val hasReEncryptEntries = journal.entriesFromCheckpoint().any { it is JournalEntry.ReEncrypt }
+                val remoteEncrypted = deviceRegistry.remoteEncrypted
+                val passphraseSet = encryptionManager.isEncryptionEnabled
+                val remotePassphraseCount = remoteDocs.maxOfOrNull { it.passphrase } ?: 0
+                val localPassphraseCount = localDriveIndex.passphraseCount
 
-                    Tracing.d(Category.DRIVE_API, TAG, "performSync: gating remoteEncrypted=$remoteEncrypted passphraseSet=$passphraseSet remoteDocsSize=${remoteDocs.size} hasReEncryptEntries=$hasReEncryptEntries")
+                Tracing.d(Category.DRIVE_API, TAG, "performSync: gating remoteEncrypted=$remoteEncrypted passphraseSet=$passphraseSet localCount=$localPassphraseCount remoteCount=$remotePassphraseCount remoteDocsSize=${remoteDocs.size}")
 
-                    if (remoteEncrypted && !passphraseSet && !hasReEncryptEntries) {
-                        Tracing.w(Category.DRIVE_API, TAG, "performSync: Drive encrypted, passphrase required")
-                        _syncState.value = SyncState.Error("This Drive is encrypted. Enter your passphrase to sync.")
-                        throw SyncAborted()
-                    }
-
-                    if (remoteEncrypted && passphraseSet && remoteDocs.isNotEmpty()) {
-                        val anyDecrypted = remoteDocs.any { it.metadata != null }
-                        Tracing.d(Category.DRIVE_API, TAG, "performSync: wrong-passphrase check anyDecrypted=$anyDecrypted (of ${remoteDocs.size} docs)")
-                        if (!anyDecrypted) {
-                            Tracing.w(Category.DRIVE_API, TAG, "performSync: wrong passphrase - all metadata decryption failed")
-                            _syncState.value = SyncState.Error("Wrong passphrase. Sync disabled until corrected.")
-                            throw SyncAborted()
-                        }
-                    }
-
-                    if (!remoteEncrypted && passphraseSet) {
-                        Tracing.w(Category.DRIVE_API, TAG, "performSync: remote not encrypted but passphrase set — remoteEncrypted may be stale false; synthesizing ReEncrypt anyway")
-                        synthesizeReEncryptPass()
-                    }
-
-                    val excludeIds = localDocs.filter { it.syncExclude || remoteDocs.any { r -> r.docId == it.id && r.isDeleted } }.map { it.id }.toSet()
-
-                    conflictResolver.detectConflicts(localDocs, remoteDocs)
-                    val conflictIds = conflictResolver.getActiveConflicts().map { it.docId }.toSet()
-
-                    val neverSyncedLoopOwned = localDocs
-                        .filter { it.syncVersion == 0 && it.id !in excludeIds && it.id !in conflictIds }
-                        .map { it.id }
-                        .toSet()
-
-                    processJournalEntries(neverSyncedLoopOwned)
-
-                    for (doc in localDocs) {
-                        if (doc.id in excludeIds) continue
-                        if (doc.id in conflictIds) continue
-                        val remote = remoteDocs.find { it.docId == doc.id }
-                        val matched = when {
-                            remote == null && doc.syncVersion == 0 -> "condition1:remoteNull+syncVer0"
-                            remote == null && journal.isEmpty() -> "condition2:remoteNull+journalEmpty"
-                            remote != null && doc.syncVersion == 0 && journal.isEmpty() -> "condition3:remoteExists+syncVer0+journalEmpty"
-                            else -> null
-                        }
-                        if (matched != null) {
-                            Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${doc.id} uploading via $matched")
-                            val ok = try {
-                                uploadEngine.uploadDocument(doc)
-                            } catch (e: Exception) {
-                                Tracing.e(Category.DRIVE_FILES, TAG, "performSync: uploadDocument threw for doc=${doc.id}: ${e.message}")
-                                false
-                            }
-                            if (!ok) {
-                                Tracing.e(Category.DRIVE_FILES, TAG, "performSync: upload failed for doc=${doc.id}, aborting sync")
-                                retryHandler.onFailure()
-                                uploadFailure = "Upload failed for doc=${doc.id}"
-                                return@withContext
-                            }
-                        } else {
-                            Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${doc.id} skipped (remote=${remote != null} syncVer=${doc.syncVersion} journalEmpty=${journal.isEmpty()})")
-                        }
-                    }
-
-                    for (remote in remoteDocs) {
-                        if (remote.isDeleted) continue
-                        if (remote.docId in conflictIds) continue
-                        val localExists = localDocs.any { it.id == remote.docId }
-                        if (!localExists && remote.metadata != null) {
-                            downloadFullDocument(remote)
-                        }
-                    }
-
-                    for (remote in remoteDocs) {
-                        if (remote.isDeleted) continue
-                        if (remote.metadata == null) continue
-                        if (remote.docId in conflictIds) continue
-                        val local = localDocs.find { it.id == remote.docId }
-                        if (local == null) continue
-                        if (remote.metadata.syncVersion > local.syncVersion) {
-                            Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${remote.docId} remote v${remote.metadata.syncVersion} > local v${local.syncVersion} downloading update")
-                            downloadFullDocument(remote)
-                        }
-                    }
-
-                    for (local in localDocs) {
-                        if (local.id in excludeIds) continue
-                        if (local.id in conflictIds) continue
-                        val treeUri = localDriveIndex.getRootTreeUri()
-                        if (treeUri.isNotBlank()) {
-                            try {
-                                val missing = downloadEngine.checkFiles(treeUri, local.id, local, remoteCache)
-                                if (missing.isNotEmpty()) {
-                                    Tracing.d(Category.DRIVE_FILES, TAG, "performSync: doc=${local.id} missing=$missing re-uploading")
-                                    val ok = try {
-                                        uploadEngine.uploadDocument(local)
-                                    } catch (e: Exception) {
-                                        Tracing.e(Category.DRIVE_FILES, TAG, "performSync: re-upload threw for doc=${local.id}: ${e.message}")
-                                        false
-                                    }
-                                    if (!ok) {
-                                        Tracing.e(Category.DRIVE_FILES, TAG, "performSync: re-upload failed for doc=${local.id}, aborting sync")
-                                        retryHandler.onFailure()
-                                        uploadFailure = "Upload failed for doc=${local.id}"
-                                        return@withContext
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Tracing.w(Category.DRIVE_FILES, TAG, "performSync: checkFiles threw for doc=${local.id}: ${e.message}")
-                            }
-                        }
-                    }
-
-                    documentRepository.notifyDocumentsChanged()
-
-                    deviceRegistry.detectOrphans(localDocs, remoteDocs, remoteCache)
-
-                    deviceRegistry.syncRegistryToDrive(passphraseSet)
-
-                    retryHandler.onSuccess()
+                if (remoteEncrypted && !passphraseSet) {
+                    Tracing.w(Category.DRIVE_API, TAG, "performSync: Drive encrypted, passphrase required")
+                    _syncState.value = SyncState.Error("This Drive is encrypted. Enter your passphrase to sync.")
+                    throw SyncAborted()
                 }
+
+                if (passphraseSet && localPassphraseCount < remotePassphraseCount) {
+                    Tracing.w(Category.DRIVE_API, TAG, "performSync: stale passphrase generation (local $localPassphraseCount < remote $remotePassphraseCount)")
+                    _syncState.value = SyncState.Error("Wrong passphrase. Sync disabled until corrected.")
+                    throw SyncAborted()
+                }
+
+                if (localPassphraseCount < remotePassphraseCount) {
+                    localDriveIndex.passphraseCount = remotePassphraseCount
+                }
+
+                val excludeIds = localDocs.filter { it.syncExclude || remoteDocs.any { r -> r.docId == it.id && r.isDeleted } }.map { it.id }.toSet()
+
+                reconcile(localDocs, remoteDocs, excludeIds, remoteCache, { reason ->
+                    uploadFailure = reason
+                })
+
+                documentRepository.notifyDocumentsChanged()
+
+                deviceRegistry.detectOrphans(localDocs, remoteDocs, remoteCache)
+
+                deviceRegistry.syncRegistryToDrive(passphraseSet)
+
+                retryHandler.onSuccess()
+            }
             val failure = uploadFailure
             if (failure != null) {
                 _syncState.value = SyncState.Error(failure)
@@ -257,59 +168,89 @@ class SyncManager @Inject constructor(
         }
     }
 
-    suspend fun synthesizeReEncryptPass() {
-        val docs = documentStore.listDocuments().getOrDefault(emptyList())
-        for (doc in docs) {
-            journal.append(JournalEntry.ReEncrypt(doc.id))
-        }
-    }
+    private suspend fun reconcile(
+        localDocs: List<com.picpocket.app.data.store.StoredDocument>,
+        remoteDocs: List<DownloadEngine.RemoteDocument>,
+        excludeIds: Set<String>,
+        remoteCache: Map<String, List<androidx.documentfile.provider.DocumentFile>>?,
+        onFailure: (String) -> Unit,
+    ) {
+        val currentCount = localDriveIndex.passphraseCount
 
-    private suspend fun processJournalEntries(neverSyncedLoopOwned: Set<String>) {
-        for (entry in journal.entriesFromCheckpoint()) {
-            if (entry.docId in neverSyncedLoopOwned && entry !is JournalEntry.ReEncrypt) {
-                Tracing.d(Category.DRIVE_FILES, TAG, "processJournalEntries: consuming ${entry::class.simpleName} for never-synced doc=${entry.docId} (upload loop owns it)")
-                journal.advanceCheckpoint()
+        for (local in localDocs) {
+            if (local.id in excludeIds) {
+                Tracing.d(Category.DRIVE_FILES, TAG, "reconcile: doc=${local.id} excluded")
                 continue
             }
-            try {
-                val ok = when (entry) {
-                    is JournalEntry.AddPage -> uploadEngine.uploadPage(entry.docId, entry.pageNumber).isSuccess
-                    is JournalEntry.RemovePage -> uploadEngine.deletePage(entry.docId, entry.pageNumber).isSuccess
-                    is JournalEntry.ReplacePageImage -> uploadEngine.replacePageImage(entry.docId, entry.pageNumber).isSuccess
-                    is JournalEntry.ReorderPages -> uploadEngine.updateMetadata(entry.docId).isSuccess
-                    is JournalEntry.UpdateDocumentName -> uploadEngine.updateMetadata(entry.docId).isSuccess
-                    is JournalEntry.UpdatePageOcr -> uploadEngine.updateMetadata(entry.docId).isSuccess
-                    is JournalEntry.ReplacePages -> uploadEngine.replacePages(entry.docId, entry.keptFilenames).isSuccess
-                    is JournalEntry.ReEncrypt -> uploadEngine.reEncryptDocument(entry.docId).isSuccess
+            val remote = remoteDocs.find { it.docId == local.id }
+            val localVersion = documentStore.metadataVersion(local.id)
+            val localCount = documentStore.metadataPassphrase(local.id)
+
+            val action = when {
+                remote == null -> "uploadNew"
+                localVersion > remote.version -> "push"
+                remote.version > localVersion -> "pull"
+                currentCount > remote.passphrase -> "reEncrypt"
+                else -> "noop"
+            }
+            Tracing.d(Category.DRIVE_FILES, TAG, "reconcile: doc=${local.id} localV=$localVersion remoteV=${remote?.version} localC=$localCount remoteC=${remote?.passphrase} -> $action")
+
+            val ok = when (action) {
+                "uploadNew" -> try {
+                    uploadEngine.uploadNewDocument(local.id)
+                } catch (e: Exception) {
+                    Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: uploadNew threw for doc=${local.id}: ${e.message}")
+                    false
                 }
-                if (ok) {
-                    journal.advanceCheckpoint()
+                "push" -> try {
+                    uploadEngine.pushDocument(local.id, remote!!.passphrase)
+                } catch (e: Exception) {
+                    Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: push threw for doc=${local.id}: ${e.message}")
+                    false
                 }
-            } catch (_: Exception) {
-                // don't advance — will retry on next sync
+                "reEncrypt" -> try {
+                    uploadEngine.forceReEncryptDocument(local.id)
+                } catch (e: Exception) {
+                    Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: reEncrypt threw for doc=${local.id}: ${e.message}")
+                    false
+                }
+                "pull" -> try {
+                    downloadEngine.pullDocument(remote!!, remoteCache)
+                } catch (e: Exception) {
+                    Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: pull threw for doc=${local.id}: ${e.message}")
+                    false
+                }
+                else -> true
+            }
+            if (!ok) {
+                Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: $action failed for doc=${local.id}, aborting sync")
+                retryHandler.onFailure()
+                onFailure("$action failed for doc=${local.id}")
+                return
             }
         }
-        try {
-            journal.truncate()
-        } catch (_: Exception) {
-            Tracing.w(Category.STORE_STATE, TAG, "processJournalEntries: truncate failed")
-        }
-    }
 
-    private suspend fun downloadFullDocument(remote: DownloadEngine.RemoteDocument) {
-        val meta = remote.metadata ?: return
-        Tracing.d(Category.DRIVE_FILES, TAG, "downloadFullDocument: doc=${remote.docId} files=${remote.fileNames.size} syncVersion=${meta.syncVersion}")
-        documentStore.writeMetadata(meta.id, meta)
-
-        val treeUri = localDriveIndex.getRootTreeUri()
-        if (treeUri.isBlank()) return
-
-        for (filename in remote.fileNames) {
-            val data = downloadEngine.downloadFile(treeUri, meta.id, filename)
-            if (data != null) {
-                val pageFile = documentStore.pageFile(meta.id, filename)
-                pageFile.parentFile?.mkdirs()
-                pageFile.writeBytes(data)
+        for (remote in remoteDocs) {
+            if (remote.isDeleted) continue
+            if (remote.docId in excludeIds) continue
+            val localExists = localDocs.any { it.id == remote.docId }
+            if (localExists) continue
+            if (remote.metadata == null) {
+                Tracing.w(Category.DRIVE_FILES, TAG, "reconcile: remote-only doc=${remote.docId} has undecodable metadata, skipping")
+                continue
+            }
+            Tracing.d(Category.DRIVE_FILES, TAG, "reconcile: remote-only doc=${remote.docId} v${remote.version} downloading")
+            val ok = try {
+                downloadEngine.pullDocument(remote, remoteCache)
+            } catch (e: Exception) {
+                Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: download threw for doc=${remote.docId}: ${e.message}")
+                false
+            }
+            if (!ok) {
+                Tracing.e(Category.DRIVE_FILES, TAG, "reconcile: download failed for doc=${remote.docId}, aborting sync")
+                retryHandler.onFailure()
+                onFailure("Download failed for doc=${remote.docId}")
+                return
             }
         }
     }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.OutputStream
 import javax.crypto.AEADBadTagException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -145,52 +146,122 @@ class DriveFileManager @Inject constructor(
         val folder = root.findFile(docId)
         val docFolder = folder ?: root.createDirectory(docId)
             ?: return@withContext WriteOutcome.Failed("failed to create doc folder $docId")
-        try {
-            context.contentResolver.refresh(docFolder.uri, null, null)
-        } catch (_: Throwable) { }
-        try {
-            for (child in docFolder.listFiles()) {
-                if (child.name == fileName) {
-                    child.delete()
+        writeFileTo(docFolder, fileName, encrypted, mimeType)
+    }
+
+    suspend fun writeRootFile(
+        treeUri: String, fileName: String, data: ByteArray,
+        mimeType: String = "application/json",
+    ): WriteOutcome = withContext(Dispatchers.IO) {
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+            ?: return@withContext WriteOutcome.Failed("tree uri invalid for $fileName")
+        writeFileTo(root, fileName, data, mimeType)
+    }
+
+    private suspend fun writeFileTo(
+        parent: DocumentFile, fileName: String, data: ByteArray, mimeType: String,
+    ): WriteOutcome {
+        var lastFailure: String? = null
+        for (attempt in 1..WRITE_ATTEMPTS) {
+            try {
+                context.contentResolver.refresh(parent.uri, null, null)
+            } catch (_: Throwable) { }
+            val existing = try {
+                parent.findFile(fileName)
+            } catch (_: Exception) {
+                null
+            }
+            val target = existing ?: try {
+                parent.createFile(mimeType, fileName)
+            } catch (_: Exception) {
+                null
+            }
+            if (target == null) {
+                lastFailure = "createFile failed for $fileName"
+                Tracing.w(Category.DRIVE_FILES, TAG, "writeFileTo: attempt $attempt createFile failed for $fileName, verifying existing target")
+                val outcome = verifySettled(parent, fileName, data.size)
+                if (outcome is WriteOutcome.Verified) return outcome
+                lastFailure = (outcome as WriteOutcome.Failed).reason
+            } else {
+                val os = openOutputStreamGuarded(target.uri, existing != null)
+                if (os == null) {
+                    lastFailure = "openOutputStream null for $fileName"
+                    Tracing.w(Category.DRIVE_FILES, TAG, "writeFileTo: attempt $attempt openOutputStream null for $fileName")
+                } else {
+                    var writeFailed = false
+                    try {
+                        withTimeout(STALL_GUARD_MS) {
+                            runInterruptible { os.write(data) }
+                        }
+                    } catch (e: Exception) {
+                        writeFailed = true
+                        lastFailure = "write phase aborted (${e.javaClass.simpleName}) for $fileName"
+                        Tracing.w(Category.DRIVE_FILES, TAG, "writeFileTo: attempt $attempt write phase aborted (${e.javaClass.simpleName}) for $fileName")
+                    } finally {
+                        try {
+                            withTimeout(CLOSE_GUARD_MS) {
+                                runInterruptible { os.close() }
+                            }
+                        } catch (_: Exception) {
+                            Tracing.w(Category.DRIVE_FILES, TAG, "writeFileTo: attempt $attempt close aborted for $fileName")
+                        }
+                    }
+                    if (!writeFailed) {
+                        val outcome = verifySettled(parent, fileName, data.size)
+                        if (outcome is WriteOutcome.Verified) return outcome
+                        lastFailure = (outcome as WriteOutcome.Failed).reason
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: delete of existing $fileName failed (${e.message}), continuing best-effort for $docId")
+            if (attempt < WRITE_ATTEMPTS) {
+                Tracing.w(Category.DRIVE_FILES, TAG, "writeFileTo: attempt $attempt failed ($lastFailure), retrying in ${WRITE_RETRY_DELAY_MS}ms")
+                delay(WRITE_RETRY_DELAY_MS)
+            }
         }
-        val newFile = try {
-            docFolder.createFile(mimeType, fileName)
+        Tracing.w(Category.DRIVE_FILES, TAG, "writeFileTo: all $WRITE_ATTEMPTS attempts failed for $fileName, rolling back")
+        rollbackFile(parent, fileName)
+        return WriteOutcome.Failed(lastFailure ?: "write failed after $WRITE_ATTEMPTS attempts for $fileName")
+    }
+
+    private fun openOutputStreamGuarded(uri: Uri, existing: Boolean): OutputStream? {
+        if (existing) {
+            try {
+                return context.contentResolver.openOutputStream(uri, "rwt")
+            } catch (_: Exception) { }
+            try {
+                return context.contentResolver.openOutputStream(uri, "wt")
+            } catch (_: Exception) { }
+        }
+        return try {
+            context.contentResolver.openOutputStream(uri)
         } catch (_: Exception) {
             null
         }
-        if (newFile == null) {
-            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: createFile failed for $docId/$fileName, verifying existing target")
-            return@withContext verifySettled(docFolder, fileName, encrypted.size)
-        }
-        val os = context.contentResolver.openOutputStream(newFile.uri)
-        if (os == null) {
-            return@withContext WriteOutcome.Failed("openOutputStream null for $docId/$fileName")
-        }
-        var writeFailed = false
+    }
+
+    private suspend fun rollbackFile(parent: DocumentFile, fileName: String) {
         try {
-            withTimeout(STALL_GUARD_MS) {
-                runInterruptible { os.write(encrypted) }
-            }
-        } catch (e: Exception) {
-            writeFailed = true
-            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: write phase aborted (${e.javaClass.simpleName}) for $docId/$fileName")
-        } finally {
-            try {
-                withTimeout(CLOSE_GUARD_MS) {
-                    runInterruptible { os.close() }
-                }
-            } catch (_: Exception) {
-                Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: close aborted for $docId/$fileName")
-            }
+            context.contentResolver.refresh(parent.uri, null, null)
+        } catch (_: Throwable) { }
+        val target = try {
+            parent.findFile(fileName)
+        } catch (_: Exception) {
+            null
         }
-        if (writeFailed) {
-            Tracing.w(Category.DRIVE_FILES, TAG, "writeFile: write did not complete cleanly, verifying outcome for $docId/$fileName")
+        if (target == null) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "rollbackFile: $fileName already gone, nothing to delete")
+            return
         }
-        verifySettled(docFolder, fileName, encrypted.size)
+        val deleted = try {
+            target.delete()
+        } catch (_: Exception) {
+            false
+        }
+        Tracing.w(
+            Category.DRIVE_FILES, TAG,
+            if (deleted) "rollbackFile: deleted $fileName after failed write"
+            else "rollbackFile: could not delete $fileName after failed write",
+        )
     }
 
     private suspend fun verifySettled(docFolder: DocumentFile, fileName: String, expectedSize: Int): WriteOutcome {
@@ -204,16 +275,6 @@ class DriveFileManager @Inject constructor(
             }
             if (System.currentTimeMillis() >= deadline) break
             delay(VERIFY_POLL_INTERVAL_MS)
-        }
-        try {
-            for (child in docFolder.listFiles()) {
-                if (child.name == fileName) {
-                    child.delete()
-                    break
-                }
-            }
-        } catch (e: Exception) {
-            Tracing.w(Category.DRIVE_FILES, TAG, "verifySettled: partial cleanup failed for $fileName")
         }
         return verifyOutcome(expectedSize, lastActual)
     }
@@ -245,6 +306,8 @@ class DriveFileManager @Inject constructor(
         const val RECONCILE_WINDOW_MS = 30_000L
         const val VERIFY_POLL_INTERVAL_MS = 2_000L
         const val READ_GUARD_MS = 60_000L
+        const val WRITE_ATTEMPTS = 3
+        const val WRITE_RETRY_DELAY_MS = 500L
 
         fun verifyOutcome(expectedSize: Int, actualSize: Long?): WriteOutcome {
             return if (actualSize == expectedSize.toLong()) {
@@ -281,9 +344,9 @@ class DriveFileManager @Inject constructor(
     }
 
     suspend fun readMetadataJson(
-        treeUri: String, docId: String,
+        treeUri: String, docId: String, fileName: String,
         remoteCache: Map<String, List<DocumentFile>>? = null,
     ): ByteArray? = withContext(Dispatchers.IO) {
-        readFile(treeUri, docId, "metadata.json", remoteCache)
+        readFile(treeUri, docId, fileName, remoteCache)
     }
 }

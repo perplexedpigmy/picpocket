@@ -6,6 +6,7 @@ import android.content.ContentResolver
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import com.picpocket.app.data.store.PageNaming
 import com.picpocket.app.domain.scan.PageEncoder
 import com.picpocket.app.domain.scan.QualityTier
 import kotlinx.coroutines.Dispatchers
@@ -41,17 +42,20 @@ class PdfPageImporter @Inject constructor() {
                 page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                 page.close()
 
+                val pageNumber = i + 1
                 val tempFile = File(targetDir, "tmp_pdf_$i")
                 tempFile.outputStream().use { out ->
                     bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
                 }
                 bitmap.recycle()
 
-                val pageNumber = i + 1
-                val filename = "%05d".format(pageNumber)
-                val destFile = File(targetDir, filename)
-                PageEncoder.encodePage(tempFile, destFile, qualityTier)
+                val staged = File(targetDir, "staged_$i")
+                PageEncoder.encodePage(tempFile, staged, qualityTier)
                 tempFile.delete()
+
+                val filename = PageNaming.filenameFor(staged)
+                val destFile = File(targetDir, filename)
+                staged.renameTo(destFile)
 
                 results.add(PdfPageImportResult(pageNumber, filename, destFile.length()))
             }

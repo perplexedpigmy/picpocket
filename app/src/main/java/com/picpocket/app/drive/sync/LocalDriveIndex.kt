@@ -17,6 +17,7 @@ data class DriveIndex(
     var rootFolderId: String = "",
     var rootTreeUri: String = "",
     var rootFolderName: String = "",
+    var passphraseCount: Int = 0,
 )
 
 @Serializable
@@ -30,8 +31,6 @@ data class DeviceInfo(
 data class DocumentDriveInfo(
     var folderId: String = "",
     val pages: MutableMap<String, String> = mutableMapOf(),
-    var syncVersion: Int = 0,
-    var syncTimestamp: Long = 0L,
     var lastKnownEtag: String = "",
 )
 
@@ -100,6 +99,13 @@ class LocalDriveIndex @Inject constructor(
         index.rootFolderName = name
         save()
     }
+
+    var passphraseCount: Int
+        get() = index.passphraseCount
+        set(value) {
+            index.passphraseCount = value
+            save()
+        }
 
     fun hasValidFolder(): Boolean {
         return index.rootTreeUri.isNotBlank()
