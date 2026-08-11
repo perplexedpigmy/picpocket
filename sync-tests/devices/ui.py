@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from typing import Optional
 
@@ -180,18 +181,56 @@ class UiDevice:
         )
         return False
 
-    def read_device_metadata(self, doc_id: str) -> Optional[dict]:
+    def page_file_size(self, doc_id: str, filename: str) -> Optional[int]:
+        """Return the local size in bytes of a page file, or None if missing.
+
+        Uses `wc -c <file>` (argument form), NOT `wc -c < <file>`: the shell
+        redirection is resolved by the outer adb shell (the `shell` user),
+        which cannot open the app's private data dir, so run-as never even
+        runs. As an argument, the path is resolved under run-as as the app
+        user and works.
+        """
         out = self.adb.shell(
-            f"run-as {APP_PACKAGE} cat files/documents/{doc_id}/metadata.json 2>/dev/null || true",
+            f"run-as {APP_PACKAGE} wc -c files/documents/{doc_id}/{filename} 2>/dev/null || true",
             timeout=5,
         )
+        out = (out or "").strip()
         if not out:
-            logger.warning("Device metadata.json not found for doc %s on %s", doc_id, self.serial)
+            return None
+        parts = out.split()
+        if not parts or not parts[0].isdigit():
+            return None
+        return int(parts[0])
+
+    def read_device_metadata(self, doc_id: str) -> Optional[dict]:
+        """Read the newest metadata.{V}.{P}.json for a doc from device storage."""
+        out = self.adb.shell(
+            f"run-as {APP_PACKAGE} ls files/documents/{doc_id}/ 2>/dev/null || true",
+            timeout=5,
+        )
+        names = [
+            n for n in (out or "").split()
+            if re.match(r"metadata\.\d+\.\d+\.json$", n)
+        ]
+        if not names:
+            logger.warning("No versioned metadata for doc %s on %s", doc_id, self.serial)
+            return None
+        newest = max(names, key=lambda n: int(n.split(".")[1]))
+        content = self.adb.shell(
+            f"run-as {APP_PACKAGE} cat files/documents/{doc_id}/{newest} 2>/dev/null || true",
+            timeout=5,
+        )
+        if not content:
+            logger.warning(
+                "Device metadata %s empty for doc %s on %s", newest, doc_id, self.serial
+            )
             return None
         try:
-            return json.loads(out)
+            return json.loads(content)
         except json.JSONDecodeError as e:
-            logger.warning("Device metadata.json unparseable for %s: %s", doc_id, e)
+            logger.warning(
+                "Device metadata %s unparseable for %s: %s", newest, doc_id, e
+            )
             return None
 
     def _go_home(self, timeout: float = 10.0):

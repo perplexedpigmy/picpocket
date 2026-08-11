@@ -332,10 +332,15 @@ def empty_drive_trash(timeout: int = 120) -> None:
             )
             return []
         try:
-            return json.loads(result.stdout)
+            rows = json.loads(result.stdout)
         except json.JSONDecodeError as e:
             logger.warning("rclone trashed-only lsjson parse error: %s", e)
             return []
+        # Only files matter: `rclone delete` cannot remove directories, and a
+        # trashed empty directory (left behind by doc-folder deletes) would
+        # otherwise keep the retry loop below spinning until the timeout.
+        # Empty trashed dirs are harmless and purged by Drive's bin retention.
+        return [r for r in rows if not r.get("IsDir")]
 
     if not _trashed_rows():
         logger.info("Drive bin is already empty")
@@ -389,6 +394,53 @@ def purge_remote_dir(rel_path: str) -> bool:
         return False
     logger.info("Drive backend purge complete: %s", rel_path)
     return True
+
+
+def purge_folder_via_mount(rel_path: str, timeout: int = 120) -> bool:
+    """Permanently delete a directory under PicPocketTest via the FUSE mount.
+
+    Same intent as purge_drive but scoped to a single subfolder, so it does not
+    touch the rest of the remote tree. Deletes through the mount (rmtree on the
+    mount point) to keep the mount's VFS/dir-cache and the remote folder ID in
+    sync, polls Drive until the folder is gone, and re-scans Nextcloud so no
+    phantom filecache entries remain. An out-of-band `rclone purge` must not be
+    used here: it desyncs the running mount's dir-cache, and a later mkdir of
+    the same path silently breaks all subsequent uploads. Returns True if the
+    folder existed and was purged, False otherwise. Never raises.
+    """
+    target = RCLONE_MOUNT_POINT / rel_path
+    existed = target.exists()
+    if not existed:
+        return False
+
+    def _rmtree() -> None:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+
+    _rmtree()
+    deadline = time.time() + timeout
+    while _folder_on_drive(rel_path) and time.time() < deadline:
+        logger.warning("Drive %s not empty after mount delete, retrying", rel_path)
+        _rmtree()
+        time.sleep(5)
+    if _folder_on_drive(rel_path):
+        logger.warning("Drive %s still present after purge", rel_path)
+    else:
+        logger.info("Drive %s purged via mount; Nextcloud re-scanned", rel_path)
+    _occ(["files:scan", "--all"], check=False)
+    return True
+
+
+def _folder_on_drive(rel_path: str) -> bool:
+    """True if rel_path (or anything under it) still exists on Drive."""
+    rows = _drive_listing()
+    prefix = rel_path.rstrip("/") + "/"
+    return any(
+        r.get("Path") == rel_path or r.get("Path", "").startswith(prefix)
+        for r in rows
+    )
 
 
 def wait_drive_finalized(path: str, min_size: int = 0, timeout: float = 180.0) -> list[dict]:

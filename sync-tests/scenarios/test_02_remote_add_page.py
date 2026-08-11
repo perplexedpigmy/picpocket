@@ -1,12 +1,15 @@
-import json
 import logging
 import time
 
 import pytest
 
 from devices.pdf_utils import generate_and_push
+from devices.tracing import sync_until, sync_with_false_mutex_retry
 
 logger = logging.getLogger(__name__)
+
+NEW_PAGE_FILE = "remote_page.jpg"
+NEW_PAGE_CONTENT = "mock image data added remotely"
 
 
 class TestRemoteAddPage:
@@ -21,67 +24,51 @@ class TestRemoteAddPage:
         emu_a.import_pdf("test-remote.pdf")
         time.sleep(3)
 
-        emu_a.trigger_sync()
-        watcher_a.wait_for_sync()
+        sync_with_false_mutex_retry(emu_a, watcher_a)
 
         doc_prefix = oracle.wait_for_doc_folder()
         assert doc_prefix, "Doc not found in Drive after initial sync"
+
+        # Oracle adds a page out-of-band and bumps the metadata version.
+        meta, version, passphrase = oracle.read_metadata(doc_prefix)
+        assert meta is not None, "Versioned metadata not found on server"
+        pages = meta.get("pages", [])
+        assert pages, "Doc should have at least one page on the server"
+        next_page_number = max(p["pageNumber"] for p in pages) + 1
+        pages.append({
+            "pageNumber": next_page_number,
+            "filename": NEW_PAGE_FILE,
+            "fileSizeBytes": len(NEW_PAGE_CONTENT.encode()),
+            "filterTypeOrdinal": 0,
+            "createdAt": int(time.time() * 1000),
+        })
+        meta["pages"] = pages
         oracle.write_file(
-            f"{doc_prefix}/page_004.jpg",
-            "mock image data",
+            f"{doc_prefix}/{NEW_PAGE_FILE}",
+            NEW_PAGE_CONTENT,
             "image/jpeg",
         )
+        oracle.write_metadata(doc_prefix, meta, version + 1, passphrase)
 
-        metadata = oracle.read_metadata(doc_prefix)
-        assert metadata is not None, "metadata.json not found"
-        metadata["pageCount"] = 4
-        metadata["syncVersion"] = metadata.get("syncVersion", 1) + 1
-        oracle.write_file(
-            f"{doc_prefix}/metadata.json",
-            json.dumps(metadata),
-            "application/json",
-        )
-
-        # Probe: the remote-added page must actually be on the server. The
-        # app sees it only after the Nextcloud-client bridge refreshes its
-        # folder listing, so verify the server directly (WebDAV).
+        # Probe: the remote-added page must actually be on the server, and the
+        # metadata must be bumped to the next version.
         server_files = oracle.list_files(f"/PicPocketTest/{doc_prefix}")
-        assert "page_004.jpg" in server_files, (
-            f"page_004.jpg missing on server: {server_files}"
+        assert NEW_PAGE_FILE in server_files, (
+            f"{NEW_PAGE_FILE} missing on server: {server_files}"
+        )
+        assert f"metadata.{version + 1}.{passphrase}.json" in server_files, (
+            f"bumped metadata missing on server: {server_files}"
         )
 
-        # Round 1: prime the bridge. The app's sync scans the client's cached
-        # folder listing, which is stale right after an out-of-band server
-        # write, so this sync misses the new page but its folder access
-        # triggers the client's on-demand RefreshFolderOperation.
-        emu_a.trigger_sync()
-        watcher_a.wait_for_sync()
-        assert watcher_a.wait_for_client_refresh(doc_prefix), (
-            "Nextcloud client did not refresh doc folder after sync"
-        )
+        # Sync until the app sees the fresh bridge listing and pulls: remote
+        # metadata version (V+1) exceeds the device's local version, so the
+        # app downloads the new page file and writes metadata at V+1.
+        def _downloaded():
+            return emu_a.page_file_exists(doc_prefix, NEW_PAGE_FILE, timeout=5.0)
 
-        # Round 2: the client listing is now fresh. Force a download by
-        # setting the remote syncVersion one above the device's local version
-        # (adjacent versions => no conflict, remote > local => download).
-        device_meta = emu_a.read_device_metadata(doc_prefix)
-        assert device_meta is not None, "device metadata.json missing after sync"
-        device_meta["syncVersion"] = device_meta.get("syncVersion", 0) + 1
-        oracle.write_file(
-            f"{doc_prefix}/metadata.json",
-            json.dumps(device_meta),
-            "application/json",
+        assert sync_until(emu_a, watcher_a, _downloaded), (
+            "Device did not download remote-added page %s" % NEW_PAGE_FILE
         )
-
-        emu_a.trigger_sync()
-        result = watcher_a.wait_for_pattern(
-            __import__("re").compile(r"downloadFullDocument")
-        )
-        logger.info("Sync logcat line: %s", result)
-        watcher_a.wait_for_sync()
 
         emu_a._go_home(timeout=15.0)
         assert emu_a.assert_doc_exists("test-remote"), "Doc missing after page add"
-
-        assert emu_a.page_file_exists(doc_prefix, "page_004.jpg"), (
-            "Device did not download remote-added page page_004.jpg"
-        )

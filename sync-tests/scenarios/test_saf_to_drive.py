@@ -4,7 +4,9 @@ import time
 import pytest
 
 from devices.pdf_utils import generate_and_push
-from infra.nextcloud import purge_drive, wait_drive_finalized
+from infra import nextcloud as nc
+from infra.nextcloud import purge_drive
+from scenarios._integrity import assert_drive_verified
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ class TestSafToDrive:
         self._trigger_sync(emu_a)
         watcher_a.wait_for_sync()
 
-        self._assert_verified_completion(oracle)
+        self._assert_verified_completion(oracle, emu_a)
 
     def test_large_file_through_chain(self, emu_a, watcher_a, oracle):
         generate_and_push(emu_a.adb, "saf-large", pages=50)
@@ -68,7 +70,7 @@ class TestSafToDrive:
         self._trigger_sync(emu_a)
         watcher_a.wait_for_sync(timeout=300)
 
-        self._assert_verified_completion(oracle, drive_timeout=300)
+        self._assert_verified_completion(oracle, emu_a, drive_timeout=300)
 
     def test_after_reinstall(self, emu_a, watcher_a, oracle):
         generate_and_push(emu_a.adb, "saf-reinstall", pages=1)
@@ -81,39 +83,72 @@ class TestSafToDrive:
         self._trigger_sync(emu_a)
         watcher_a.wait_for_sync()
 
-        self._assert_verified_completion(oracle)
+        self._assert_verified_completion(oracle, emu_a)
 
-    def _assert_verified_completion(self, oracle, drive_timeout=180):
+    def _assert_verified_completion(self, oracle, emu_a=None, drive_timeout=180):
         """Assert the sync landed end-to-end with verified completion.
 
         B1: every file under each synced doc folder is fully written on the
         WebDAV side (non-zero content length).
         B2: the Drive copy is finalized — no 'application/x-partial-download'
         residue, every file has a size and a real MD5.
+
+        Delegates to scenarios._integrity; on a WebDAV-length failure the
+        forensic dump snapshots server/Drive/app state for the exact file.
         """
-        entries = oracle._list_entries("/PicPocketTest")
-        doc_folders = [name for name, is_col in entries if is_col and not name.startswith(".")]
-        logger.info("Drive folder after sync: %s", entries)
-        assert doc_folders, "No doc folders found on Drive after sync"
+        assert_drive_verified(
+            oracle,
+            drive_timeout=drive_timeout,
+            on_file_fail=lambda folder, child: self._forensic_dump(
+                oracle, folder, child, emu_a
+            ),
+        )
 
-        for folder in doc_folders:
-            for child, is_col in oracle._list_entries(f"/PicPocketTest/{folder}"):
-                if is_col:
-                    continue
-                assert oracle.verify_file_complete(f"{folder}/{child}", expected_bytes=1, timeout=60), (
-                    f"WebDAV file not complete: {folder}/{child}"
-                )
+    def _forensic_dump(self, oracle, folder, child, emu_a):
+        """Snapshot server/Drive/app state for a file that failed B1.
 
-        finalized = wait_drive_finalized("", min_size=0, timeout=drive_timeout)
-        assert finalized, "Drive folder empty after sync"
-        partial = [r["Path"] for r in finalized if r.get("MimeType") == "application/x-partial-download"]
-        assert not partial, f"Partial-download residue on Drive: {partial}"
-        no_hash = [r["Path"] for r in finalized if not (r.get("Hashes") or {}).get("md5")]
-        assert not no_hash, f"Files without MD5 on Drive: {no_hash}"
-        paths = [r["Path"] for r in finalized]
-        dups = sorted({p for p in paths if paths.count(p) > 1})
-        assert not dups, f"Duplicate file objects on Drive: {dups}"
-        logger.info("Drive finality verified: %d file(s), no partial-download residue", len(finalized))
+        Runs inside the test body, i.e. BEFORE the setup fixture's teardown
+        clears the remote folder. Aim: decide whether the 0-byte file is real
+        server truth, a stale server filecache entry, or a client-side phantom
+        — and whether anything (occ scan, time, Drive write-back) cleans it.
+        """
+        import requests
+
+        rel = f"{folder}/{child}"
+        logger.info("=== forensic dump: %s ===", rel)
+        try:
+            exists, length = oracle.head_file(rel)
+            logger.info("  PROPFIND depth:0 -> exists=%s length=%s", exists, length)
+        except Exception as e:
+            logger.warning("  head_file failed: %s", e)
+        try:
+            resp = requests.get(oracle._webdav_url(rel), auth=oracle.auth, timeout=10)
+            logger.info("  GET -> status=%d length=%d", resp.status_code, len(resp.content))
+        except Exception as e:
+            logger.warning("  GET failed: %s", e)
+        logger.info("  folder %s contents:", folder)
+        for c, is_col in oracle._list_entries(f"/PicPocketTest/{folder}"):
+            if is_col:
+                continue
+            logger.info("    %s length=%s", c, oracle._child_length(f"{folder}/{c}"))
+        logger.info("  running occ files:scan --all (server filecache vs disk)")
+        nc._occ(["files:scan", "--all"], check=False)
+        time.sleep(3)
+        logger.info("  after scan: length=%s", oracle._child_length(rel))
+        time.sleep(20)
+        logger.info("  after +20s: length=%s", oracle._child_length(rel))
+        try:
+            rows = nc.drive_state()
+            match = [r for r in rows if r.get("Path", "").startswith(folder)]
+            logger.info("  Drive rows under %s: %s", folder, match)
+        except Exception as e:
+            logger.warning("  drive_state failed: %s", e)
+        if emu_a is not None:
+            out = emu_a.adb.logcat() or ""
+            lines = [l for l in out.splitlines() if child in l]
+            logger.info("  app logcat mentioning %s (%d lines):", child, len(lines))
+            for l in lines[-50:]:
+                logger.info("    %s", l)
 
     def _select_picpockettest_folder(self, emu_a, timeout=60):
         emu_a.open_app()

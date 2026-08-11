@@ -11,16 +11,31 @@ logger = logging.getLogger(__name__)
 SYNC_COMPLETE = re.compile(r"performSync:\s*complete")
 SYNC_STARTED = re.compile(r"performSync:\s*starting")
 SYNC_ERROR = re.compile(r"performSync:\s*error")
-UPLOAD_DOC = re.compile(r"uploadDocument")
-DOWNLOAD_DOC = re.compile(r"downloadFullDocument")
 MUTEX_LOCKED = re.compile(r"mutex locked by another device")
 LOCK_ENOENT = re.compile(r"performSync:\s*error open failed: ENOENT")
 DOWNLOAD_ERR = re.compile(r"performSync:\s*error Error downloading file:")
 UPLOAD_ABORT = re.compile(r"performSync:\s*upload.*(?:failed|threw) for doc=")
-WRONG_PASSPHRASE = re.compile(r"performSync:\s*wrong passphrase")
+# The current SyncManager logs upload/download aborts under the reconcile tag
+# (not "performSync: ..."), e.g. "reconcile: uploadNew failed for doc=..., aborting sync".
+RECONCILE_ABORT = re.compile(
+    r"reconcile: (?:uploadNew|push|reEncrypt|pull|download)\s+(?:threw|failed) for doc="
+)
+WRONG_PASSPHRASE = re.compile(r"performSync:\s*stale passphrase generation")
 ENCRYPTION_GATING = re.compile(r"Drive encrypted, passphrase required")
-CHECK_FILES = re.compile(r"checkFiles")
-CONFLICT = re.compile(r"detectConflicts")
+REGISTRY_CORRUPT = re.compile(r"devices\.json.*(?:corrupt|could not be read)")
+
+# Any of these patterns means the current sync did NOT end in
+# "performSync: complete" and must not be reported as success.
+_TERMINAL_FAILURES = (
+    SYNC_ERROR,
+    RECONCILE_ABORT,
+    MUTEX_LOCKED,
+    LOCK_ENOENT,
+    DOWNLOAD_ERR,
+    UPLOAD_ABORT,
+    WRONG_PASSPHRASE,
+    REGISTRY_CORRUPT,
+)
 
 APP_PACKAGE = "com.picpocket.app"
 
@@ -45,7 +60,8 @@ class SyncWatcher:
     def __init__(self, device: AdbDevice):
         self.device = device
 
-    def _wait_logcat(self, pattern: re.Pattern, timeout: float) -> Optional[str]:
+    def _wait_logcat(self, pattern: re.Pattern, timeout: float,
+                     fail_on: tuple = ()) -> Optional[str]:
         self.device.logcat_clear()
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -54,6 +70,10 @@ class SyncWatcher:
                 for line in output.splitlines():
                     if pattern.search(line):
                         return line
+                    if fail_on and any(p.search(line) for p in fail_on):
+                        raise TimeoutError(
+                            f"Sync ended in failure before 'performSync: complete': {line}"
+                        )
             time.sleep(1)
         return None
 
@@ -68,15 +88,30 @@ class SyncWatcher:
 
     def wait_for_sync(self, timeout: float = 60.0) -> str:
         since = _get_last_seen(self.device) or 0
-        line = self._wait_logcat(SYNC_COMPLETE, timeout)
+        # Fail fast on a terminal failure (upload/download abort, mutex hiccup,
+        # corrupt registry, ...): a broken sync must never be reported complete
+        # via the index fallback, because the app still writes devices.json
+        # after a failed reconcile, which moves the index.
+        line = self._wait_logcat(SYNC_COMPLETE, timeout, fail_on=_TERMINAL_FAILURES)
         if line:
+            logger.info("wait_for_sync matched: %s", line)
             return line
         # The logcat wait already covered the full timeout. The index fallback
-        # is just a verification that the registry moved, so keep it short;
-        # otherwise a failed sync burns the timeout twice (e.g. 150s + 150s).
-        result = self._wait_index(since, min(15.0, timeout))
-        if result is not None:
-            return f"sync complete (index lastSeen: {result})"
+        # alone is unsound: a sync that aborts JUST after the logcat window
+        # closed (e.g. a 60s createFolder socket timeout) still writes
+        # devices.json, which moves the index. So keep watching for terminal
+        # failures for the whole fallback window, interleaved with the index
+        # poll, and never report "complete" on a sync that demonstrably failed.
+        deadline = time.time() + min(15.0, timeout)
+        while time.time() < deadline:
+            failure = self._sync_failure_line()
+            if failure is not None:
+                raise TimeoutError(
+                    f"Sync ended in failure before 'performSync: complete': {failure}"
+                )
+            result = self._wait_index(since, min(2.0, deadline - time.time()))
+            if result is not None:
+                return f"sync complete (index lastSeen: {result})"
         full_log = self.device.logcat()
         sync_lines = [l for l in full_log.splitlines() if "performSync" in l]
         raise TimeoutError(
@@ -133,47 +168,29 @@ class SyncWatcher:
             f"Sync-related logcat lines:\n" + "\n".join(sync_lines[-20:])
         )
 
-    def had_false_mutex_abort(self) -> bool:
-        """True if the most recent sync aborted spuriously on the lock file.
+    def _sync_failure_line(self) -> Optional[str]:
+        """First logcat line proving the current sync aborted, or None.
 
-        The root sync-lock.json sits behind the same laggy Nextcloud bridge
-        that delays folder listings, so the mutex acquire can fail transiently
-        in two ways, both with no other device holding the lock:
-
-        - SyncMutex.acquire() returns false ("mutex locked by another
-          device"): the lock-file createFile PUT failed and androidx
-          TreeDocumentFile turned the FileNotFoundException into null.
-        - acquire() throws "open failed: ENOENT": the lock file was written
-          but readLockData's openInputStream can't see it yet.
-        - acquire() fails to download the lock file ("Error downloading file:
-          sync-lock.json"): the emulator's virtual WiFi intermittently drops
-          all egress connections for ~1s (wpa_supplicant BEACON-LOSS), and the
-          client reports HTTP -1 / UNKNOWN_ERROR with a null exception. The
-          same drop can hit any other client download mid-sync (metadata.json,
-          page files), aborting with the identical message.
-        - a doc upload aborts ("upload failed for doc=... / aborting sync"):
-          the same radio drop can kill the client's PUT after its ~60s socket
-          timeout, aborting the whole sync rather than just the mutex step.
-        - a "wrong passphrase" abort fires spuriously: the metadata.json read
-          can fail transiently (bridge cache lag / radio drop), yielding null
-          metadata and anyDecrypted=false, which the app mislabels as a wrong
-          passphrase. The next sync with the same passphrase succeeds.
-
-        Each failed attempt triggers the client's on-demand refresh, so
-        retrying the sync right after usually succeeds.
+        Scans the whole buffer (not just "performSync:" lines) because the
+        app logs reconcile upload/download aborts as
+        "reconcile: <action> failed for doc=..., aborting sync".
         """
         output = self.device.logcat() or ""
-        lines = [l for l in output.splitlines() if "performSync" in l]
-        if not lines:
-            return False
-        last = lines[-1]
-        return (
-            MUTEX_LOCKED.search(last) is not None
-            or LOCK_ENOENT.search(last) is not None
-            or DOWNLOAD_ERR.search(last) is not None
-            or UPLOAD_ABORT.search(last) is not None
-            or WRONG_PASSPHRASE.search(last) is not None
-        )
+        for line in output.splitlines():
+            if any(p.search(line) for p in _TERMINAL_FAILURES):
+                return line
+        return None
+
+    def had_false_mutex_abort(self) -> bool:
+        """True if the most recent sync aborted spuriously.
+
+        Covers the same transient lock-file failures as before plus the
+        reconcile-level upload/download aborts ("reconcile: <action> failed
+        for doc=..., aborting sync"): each is caused by the laggy bridge /
+        radio drop, and a re-triggered sync after the client's on-demand
+        refresh usually succeeds.
+        """
+        return self._sync_failure_line() is not None
 
     def had_sync_never_started(self) -> bool:
         """True if the last wait window produced no performSync line at all.
@@ -207,7 +224,9 @@ class SyncWatcher:
             LOCK_ENOENT,
             DOWNLOAD_ERR,
             UPLOAD_ABORT,
+            RECONCILE_ABORT,
             WRONG_PASSPHRASE,
+            REGISTRY_CORRUPT,
         )
         return not any(p.search(last) for p in terminal)
 
@@ -298,6 +317,28 @@ def sync_with_false_mutex_retry(emu, watcher, timeout: float = 60.0,
                 continue
             raise
     raise TimeoutError("unreachable")
+
+
+def sync_until(emu, watcher, check, timeout: float = 240.0,
+               settle: float = 15.0) -> bool:
+    """Trigger syncs until `check()` returns truthy.
+
+    The Nextcloud bridge serves folder listings from its own DB, which lags
+    out-of-band server writes by one refresh cycle. Each sync calls
+    resolver.refresh() on the doc folders, which eventually propagates the
+    new server state. This polls the observable state (via `check`) across
+    repeated syncs until it converges, instead of depending on a
+    client-internal logcat hook. Returns True once `check()` passes, False on
+    timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        sync_with_false_mutex_retry(emu, watcher)
+        if check():
+            return True
+        logger.info("sync_until: state not converged, settling %.0fs and re-syncing", settle)
+        time.sleep(settle)
+    return False
 
 
 def wait_for_pattern_with_false_mutex_retry(emu, watcher, pattern: re.Pattern,

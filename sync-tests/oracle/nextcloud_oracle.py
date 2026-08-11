@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -250,13 +251,50 @@ class NextcloudOracle:
         resp.raise_for_status()
         logger.info("Wrote %s (%dB, %s)", url, len(content), mime_type)
 
-    def read_metadata(self, doc_id: str) -> Optional[dict]:
-        """Read metadata.json for a doc from WebDAV. Returns None if missing."""
-        url = self._webdav_url(f"/PicPocketTest/{doc_id}/metadata.json")
+    def read_metadata(self, doc_id: str) -> Optional[tuple[dict, int, int]]:
+        """Read the newest metadata.{V}.{P}.json for a doc.
+
+        Returns (metadata_dict, version, passphrase), or None if the doc has
+        no versioned metadata file on the server.
+        """
+        newest = self._newest_metadata(doc_id)
+        if newest is None:
+            return None
+        name, version, passphrase = newest
+        url = self._webdav_url(f"/PicPocketTest/{doc_id}/{name}")
         resp = requests.get(url, auth=self.auth, timeout=10)
         if resp.status_code != 200:
             return None
-        return json.loads(resp.content)
+        return json.loads(resp.content), version, passphrase
+
+    def _metadata_entries(self, doc_id: str) -> list[tuple[str, int, int]]:
+        """Return (name, version, passphrase) for each metadata.*.json file."""
+        entries = []
+        for name, is_col in self._list_entries(f"/PicPocketTest/{doc_id}"):
+            if is_col:
+                continue
+            m = re.match(r"metadata\.(\d+)\.(\d+)\.json$", name)
+            if m:
+                entries.append((name, int(m.group(1)), int(m.group(2))))
+        return entries
+
+    def _newest_metadata(self, doc_id: str) -> Optional[tuple[str, int, int]]:
+        """Return the (name, version, passphrase) of the highest-versioned
+        metadata file for a doc, or None if none exists."""
+        entries = self._metadata_entries(doc_id)
+        if not entries:
+            return None
+        return max(entries, key=lambda e: e[1])
+
+    def write_metadata(self, doc_id: str, metadata: dict, version: int,
+                       passphrase: int) -> None:
+        """Write metadata.{V}.{P}.json for a doc, removing any other metadata
+        file in the folder so exactly one versioned metadata file remains."""
+        name = f"metadata.{version}.{passphrase}.json"
+        self.write_file(f"{doc_id}/{name}", json.dumps(metadata), "application/json")
+        for other, _, _ in self._metadata_entries(doc_id):
+            if other != name:
+                self._delete_entry(other, base_path=f"/PicPocketTest/{doc_id}")
 
     def _delete_entry(self, name: str, base_path: str = "/PicPocketTest",
                       retries: int = 3, delay: float = 2.0) -> bool:

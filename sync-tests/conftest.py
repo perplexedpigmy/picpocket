@@ -38,7 +38,7 @@ def oracle():
 def device_serials():
     from scripts.ensure_emulator import boot_from_snapshot
     serial = boot_from_snapshot()
-    _disable_captive_portal(AdbDevice(serial))
+    _stabilize_network(AdbDevice(serial))
     _disable_play_updates(AdbDevice(serial))
     return [serial]
 
@@ -57,7 +57,7 @@ def serial_b():
     """
     from scripts.ensure_emulator import boot_device_b
     serial = boot_device_b()
-    _disable_captive_portal(AdbDevice(serial))
+    _stabilize_network(AdbDevice(serial))
     _disable_play_updates(AdbDevice(serial))
     return serial
 
@@ -134,26 +134,36 @@ def _enable_tracing(device: AdbDevice):
         logger.error("Failed to enable Tracing on %s: %s", device.serial, verify.strip() or "empty")
 
 
-def _disable_captive_portal(device: AdbDevice):
-    """Stop Android from periodically disabling the emulator WiFi.
+def _stabilize_network(device: AdbDevice):
+    """Make the emulator's network reliable for sync tests.
 
-    Android's captive-portal validation probes the internet and, when the
-    probe times out (common on test hosts with limited internet), marks the
-    virtual WiFi as "no internet access" and DISABLES it for a while. During
-    that window every connection through the network — including the app's
-    WebDAV calls to 10.0.2.2:8080 — is dropped at TCP connect, surfacing in
-    the app as a 15s ConnectTimeout on the sync-lock PUT. Disabling the
-    captive portal checks keeps the network stable.
+    The virtio virtual WiFi ("AndroidWifi") is flaky: wpa_supplicant reports
+    beacon loss constantly and, when Android's internet-validation probe fails
+    (DNS to Google is blocked on the test host), ConnectivityService tears the
+    WiFi down and fails over to cellular, killing the app's in-flight WebDAV
+    connections. The Nextcloud client then sits on its 60s socket read timeout
+    and the sync aborts.
+
+    Instead we ride the emulated cellular path (eth0 — a plain virtual
+    ethernet NIC with no beacon logic) and disable network validation so no
+    network is ever torn down or failed over. The account and the app talk to
+    10.0.2.2:8080, which is reachable over eth0 identically.
     """
     for setting, value in [
         ("captive_portal_mode", "0"),
         ("captive_portal_detection_enabled", "0"),
         ("wifi_watchdog_on", "0"),
         ("wifi_watchdog_poor_network_test_enabled", "0"),
+        ("network_validation_enabled", "0"),
+        ("no_internet_expectation", "1"),
     ]:
         device.shell(f"settings put global {setting} {value}", timeout=10)
     device.shell("settings delete global captive_portal_server", timeout=10)
-    logger.info("Captive portal detection disabled on %s", device.serial)
+    # Switch to the stable ethernet-like data path (eth0) before tests run.
+    device.shell("svc data enable", timeout=15)
+    device.shell("svc wifi disable", timeout=15)
+    time.sleep(8)
+    logger.info("Network stabilized on %s (wifi off, eth0/cellular default)", device.serial)
 
 
 def _disable_play_updates(device: AdbDevice):

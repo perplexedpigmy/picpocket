@@ -5,13 +5,19 @@ from fpdf import FPDF
 
 from .adb import AdbDevice
 
+_BUNDLED_FONT = Path(__file__).resolve().parent / "fonts" / "DejaVuSans.ttf"
+
 
 def generate_pdf(path: str, pages: int):
-    pdf = FPDF()
+    pdf = FPDF(unit="pt", format="A4")
+    pdf.add_font("DejaVuSans", "", str(_BUNDLED_FONT))
     for i in range(pages):
         pdf.add_page()
-        pdf.set_font("Helvetica", size=12)
-        pdf.cell(text=f"Page {i+1} of {pages} - test content")
+        pdf.set_fill_color(255, 255, 255)
+        pdf.rect(0, 0, 595, 842, style="F")
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("DejaVuSans", size=14)
+        pdf.text(40, 60, f"Page {i+1} of {pages} - test content")
     pdf.output(path)
 
 
