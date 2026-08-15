@@ -7,6 +7,7 @@ from typing import Optional
 import uiautomator2 as u2
 
 from .adb import AdbDevice
+from .tracing import SyncWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,13 @@ class UiDevice:
         self.adb = AdbDevice(serial)
 
     def open_app(self):
+        current = self.d.app_current()
+        if current.get("package") == APP_PACKAGE:
+            # Already foreground — skip the stop/start churn (saves ~3-5s per
+            # call; open_app is invoked many times per test).
+            time.sleep(1)
+            self._go_home(timeout=10.0)
+            return
         self.d.app_stop(APP_PACKAGE)
         time.sleep(1)
         self.d.app_start(APP_PACKAGE)
@@ -95,7 +103,28 @@ class UiDevice:
             time.sleep(0.5)
         return False
 
-    def trigger_sync(self):
+    def trigger_sync(self) -> bool:
+        """Trigger a sync, preferring the debug broadcast receiver.
+
+        Sends `am broadcast -a com.picpocket.app.action.SYNC_NOW` (Phase B
+        receiver in the debug build) and waits ~8s for a real
+        "performSync: starting" logcat line. Returns True when the broadcast
+        path worked; otherwise falls back to the UI dance and returns False.
+        The broadcast path skips the stop/start + settings navigation that
+        cost ~15-25s per sync on older tests.
+        """
+        # Explicit component (-n), not an implicit broadcast: on Android 8+ a
+        # manifest-declared receiver in a targetSdk 34 app is never delivered
+        # an implicit broadcast, but an explicit-component broadcast always is.
+        self.adb.shell(
+            "am broadcast -n com.picpocket.app/.debug.TestSyncTriggerReceiver "
+            "-a com.picpocket.app.action.SYNC_NOW"
+        )
+        watcher = SyncWatcher(self.adb)
+        if watcher.wait_for_start(timeout=8.0):
+            logger.info("Sync triggered via broadcast on %s", self.serial)
+            return True
+        logger.warning("Broadcast did not start a sync on %s; falling back to UI", self.serial)
         self._go_home(timeout=15.0)
         if not self.open_settings():
             logger.warning("Settings not reachable on %s", self.serial)
@@ -118,13 +147,17 @@ class UiDevice:
             logger.info("Sync Now tapped (adb) on %s", self.serial)
         else:
             logger.warning("Sync Now button not found on %s", self.serial)
+        return False
 
     def import_pdf(self, pdf_name: str, timeout: float = 30.0):
         self._go_home(timeout=10.0)
         import_btn = self.d(description="Import PDF")
         if import_btn.wait(timeout=5.0):
             import_btn.click()
-            time.sleep(3)
+            # Wait for the SAF picker to come up instead of sleeping a fixed 3s
+            # (fast when the picker is warm, and no worse when it is cold).
+            if not self.d(description="Show roots").wait(timeout=10.0):
+                logger.info("SAF picker did not surface 'Show roots' (may already be open)")
             self._navigate_saf(pdf_name, timeout)
             logger.info("PDF '%s' imported on %s", pdf_name, self.serial)
         else:
