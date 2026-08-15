@@ -5,7 +5,6 @@ import pytest
 
 from devices.pdf_utils import generate_and_push
 from infra import nextcloud as nc
-from infra.nextcloud import purge_drive
 from scenarios._integrity import assert_drive_verified
 
 logger = logging.getLogger(__name__)
@@ -38,9 +37,11 @@ class TestSafToDrive:
             logger.info("Teardown: cleared remote PicPocketTest after test")
         except Exception as e:
             logger.warning("Teardown clear failed: %s", e)
-        purge_drive()
 
-    def test_select_picpockettest_folder(self, emu_a):
+    def test_select_picpockettest_folder(self, emu_a, fresh_sync_config):
+        # fresh_sync_config: wipe the saved folder selection so this test (and
+        # only this test) drives the full Nextcloud SAF picker. The other chain
+        # tests keep the selection and skip the ~30-45s SAF re-navigation.
         self._select_picpockettest_folder(emu_a)
 
         toggle = emu_a.d(description="Toggle sync")
@@ -99,6 +100,7 @@ class TestSafToDrive:
         assert_drive_verified(
             oracle,
             drive_timeout=drive_timeout,
+            drive_finality=True,
             on_file_fail=lambda folder, child: self._forensic_dump(
                 oracle, folder, child, emu_a
             ),
@@ -176,11 +178,42 @@ class TestSafToDrive:
         logger.info("SAF: PicPocketTest selected on %s", emu_a.serial)
 
     def _toggle_sync_on(self, emu_a):
-        toggle_elem = emu_a.d(description="Toggle sync")
-        if toggle_elem.wait(timeout=5):
-            toggle_elem.click()
-            time.sleep(2)
-            logger.info("Sync toggled ON on %s", emu_a.serial)
+        # When sync is already configured (the chain tests keep the selection),
+        # _select_picpockettest_folder skipped the picker and left us on the
+        # settings list — so navigate into the Sync sub-screen explicitly. The
+        # "Enable sync to start syncing" hint shows only while sync is OFF.
+        emu_a._go_home(timeout=5.0)
+        emu_a.open_settings()
+        _adb_tap("Sync", emu_a, timeout=3)
+        time.sleep(1)
+        hint = emu_a.d(text="Enable sync to start syncing")
+        if not hint.exists:
+            logger.info("Sync already ON on %s", emu_a.serial)
+            return
+        # The picker may still be closing, so the toggle can go stale between
+        # finding it and tapping it. Resolve fresh coordinates per attempt and
+        # retry until the hint clears or the budget runs out.
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            toggle_elem = emu_a.d(description="Toggle sync")
+            if toggle_elem.exists and not hint.exists:
+                logger.info("Sync already ON on %s", emu_a.serial)
+                return
+            if toggle_elem.exists:
+                try:
+                    info = emu_a.d.jsonrpc.objInfo(toggle_elem.selector)
+                    b = info["bounds"]
+                    cx = (b["left"] + b["right"]) // 2
+                    cy = (b["top"] + b["bottom"]) // 2
+                    emu_a.adb.shell(f"input tap {cx} {cy}")
+                    time.sleep(1)
+                    if not hint.exists:
+                        logger.info("Sync toggled ON on %s", emu_a.serial)
+                        return
+                except Exception as e:
+                    logger.warning("Toggle tap raced on %s: %s", emu_a.serial, e)
+            time.sleep(0.5)
+        logger.warning("Could not confirm sync toggle ON on %s", emu_a.serial)
 
     def _trigger_sync(self, emu_a):
         emu_a._go_home(timeout=5.0)

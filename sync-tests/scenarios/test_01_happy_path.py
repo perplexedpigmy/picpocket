@@ -25,7 +25,7 @@ class TestHappyPath:
         emu_a._go_home(timeout=10.0)
         assert emu_a.assert_doc_exists("test-3page"), "Doc not visible"
 
-        assert_drive_verified(oracle)
+        assert_drive_verified(oracle, drive_finality=True)
 
     def test_b_downloads_from_other_device(
         self, emu_a, emu_b, watcher_a, watcher_b, oracle, two_devices, reset_state_b
@@ -39,7 +39,7 @@ class TestHappyPath:
         doc_prefix = oracle.wait_for_doc_folder()
         assert doc_prefix, "Doc not found in Drive after A sync"
 
-        server_lengths = assert_drive_verified(oracle)[doc_prefix]
+        server_lengths = assert_drive_verified(oracle, drive_finality=True)[doc_prefix]
 
         emu_b.ensure_drive_configured()
 

@@ -25,7 +25,7 @@ class TestOrphan:
         emu_a.import_pdf("test-orphan.pdf")
         time.sleep(3)
         sync_with_false_mutex_retry(emu_a, watcher_a)
-        assert_drive_verified(oracle)
+        assert_drive_verified(oracle, drive_finality=True)
 
         doc_prefix = oracle.wait_for_doc_folder()
         assert doc_prefix, "Doc not found in Drive after A's initial sync"

@@ -56,62 +56,40 @@ def _get_last_seen(device: AdbDevice) -> Optional[int]:
         return None
 
 
+SYNC_TAG = "SyncManager"
+
+
 class SyncWatcher:
     def __init__(self, device: AdbDevice):
         self.device = device
 
-    def _wait_logcat(self, pattern: re.Pattern, timeout: float,
-                     fail_on: tuple = ()) -> Optional[str]:
+    def wait_for_sync(self, timeout: float = 60.0) -> str:
+        since = _get_last_seen(self.device) or 0
+        # Poll the cheap drive_index.json lastSeen (a fast run-as cat) AND a
+        # filtered SyncManager logcat every second. lastSeen only advances on a
+        # SUCCESSFUL reconcile (syncRegistryToDrive runs after the reconcile
+        # loop, which returns early on any upload/download abort), so the index
+        # is a trustworthy success signal. The continuous filtered logcat scan
+        # still catches terminal failures so a broken sync is never reported
+        # complete.
         self.device.logcat_clear()
         deadline = time.time() + timeout
         while time.time() < deadline:
-            output = self.device.logcat()
+            output = self.device.logcat_filtered(SYNC_TAG)
             if output:
                 for line in output.splitlines():
-                    if pattern.search(line):
+                    if SYNC_COMPLETE.search(line):
+                        logger.info("wait_for_sync matched: %s", line)
                         return line
-                    if fail_on and any(p.search(line) for p in fail_on):
+                    if any(p.search(line) for p in _TERMINAL_FAILURES):
                         raise TimeoutError(
                             f"Sync ended in failure before 'performSync: complete': {line}"
                         )
-            time.sleep(1)
-        return None
-
-    def _wait_index(self, since: int, timeout: float) -> Optional[int]:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
             last_seen = _get_last_seen(self.device)
             if last_seen is not None and last_seen > since + 1000:
-                return last_seen
-            time.sleep(2)
-        return None
-
-    def wait_for_sync(self, timeout: float = 60.0) -> str:
-        since = _get_last_seen(self.device) or 0
-        # Fail fast on a terminal failure (upload/download abort, mutex hiccup,
-        # corrupt registry, ...): a broken sync must never be reported complete
-        # via the index fallback, because the app still writes devices.json
-        # after a failed reconcile, which moves the index.
-        line = self._wait_logcat(SYNC_COMPLETE, timeout, fail_on=_TERMINAL_FAILURES)
-        if line:
-            logger.info("wait_for_sync matched: %s", line)
-            return line
-        # The logcat wait already covered the full timeout. The index fallback
-        # alone is unsound: a sync that aborts JUST after the logcat window
-        # closed (e.g. a 60s createFolder socket timeout) still writes
-        # devices.json, which moves the index. So keep watching for terminal
-        # failures for the whole fallback window, interleaved with the index
-        # poll, and never report "complete" on a sync that demonstrably failed.
-        deadline = time.time() + min(15.0, timeout)
-        while time.time() < deadline:
-            failure = self._sync_failure_line()
-            if failure is not None:
-                raise TimeoutError(
-                    f"Sync ended in failure before 'performSync: complete': {failure}"
-                )
-            result = self._wait_index(since, min(2.0, deadline - time.time()))
-            if result is not None:
-                return f"sync complete (index lastSeen: {result})"
+                logger.info("wait_for_sync matched via index lastSeen=%s", last_seen)
+                return f"sync complete (index lastSeen: {last_seen})"
+            time.sleep(1)
         full_log = self.device.logcat()
         sync_lines = [l for l in full_log.splitlines() if "performSync" in l]
         raise TimeoutError(
@@ -148,13 +126,13 @@ class SyncWatcher:
         deadline = time.time() + timeout
         last_lines = []
         while time.time() < deadline:
-            output = self.device.logcat()
+            output = self.device.logcat_filtered(SYNC_TAG)
             if output:
                 lines = output.splitlines()
                 last_lines = lines[-15:]
                 # Scan the whole buffer (not just the tail): the event we are
                 # waiting for may already have been emitted during trigger_sync
-                # before this watcher started, and logcat_clear() used to wipe it.
+                # before this watcher started.
                 for line in lines:
                     if pattern.search(line):
                         logger.info("Pattern matched: %s", line)
@@ -171,11 +149,11 @@ class SyncWatcher:
     def _sync_failure_line(self) -> Optional[str]:
         """First logcat line proving the current sync aborted, or None.
 
-        Scans the whole buffer (not just "performSync:" lines) because the
-        app logs reconcile upload/download aborts as
+        Scans the SyncManager tag buffer (not just "performSync:" lines) because
+        the app logs reconcile upload/download aborts as
         "reconcile: <action> failed for doc=..., aborting sync".
         """
-        output = self.device.logcat() or ""
+        output = self.device.logcat_filtered(SYNC_TAG) or ""
         for line in output.splitlines():
             if any(p.search(line) for p in _TERMINAL_FAILURES):
                 return line
@@ -199,7 +177,7 @@ class SyncWatcher:
         means the "Sync Now" tap did not actually start a sync (uiautomator
         tap flakiness), rather than the sync running and failing.
         """
-        output = self.device.logcat() or ""
+        output = self.device.logcat_filtered(SYNC_TAG) or ""
         return not any("performSync" in line for line in output.splitlines())
 
     def had_sync_in_progress(self) -> bool:
@@ -212,7 +190,7 @@ class SyncWatcher:
         re-triggering, since navigating away would cancel it via
         viewModelScope teardown.
         """
-        output = self.device.logcat() or ""
+        output = self.device.logcat_filtered(SYNC_TAG) or ""
         lines = [l for l in output.splitlines() if "performSync" in l]
         if not lines:
             return False

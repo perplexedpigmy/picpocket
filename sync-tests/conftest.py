@@ -38,6 +38,12 @@ def oracle():
 def device_serials():
     from scripts.ensure_emulator import boot_from_snapshot
     serial = boot_from_snapshot()
+    # The emulator boots fresh from its snapshot, so any APK-install markers a
+    # previous session left are stale (the reboot reverted the app to the
+    # snapshot build). Clear them so this session installs the current APK
+    # exactly once per device.
+    for marker in _APK_HASH_FILE.parent.glob(".apk_hash_*"):
+        marker.unlink()
     _stabilize_network(AdbDevice(serial))
     _disable_play_updates(AdbDevice(serial))
     return [serial]
@@ -101,6 +107,50 @@ NEXTCLOUD_APP_PACKAGE = "com.nextcloud.client"
 APP_PACKAGE = "com.picpocket.app"
 NEXTCLOUD_USER = "testuser"
 NEXTCLOUD_PASS = "testpass123"
+
+_APK_HASH_FILE = Path(__file__).resolve().parent / "tmp" / ".apk_hash"
+
+
+def _apk_hash_file(device: AdbDevice) -> Path:
+    """Per-device APK hash marker.
+
+    The hash is per-serial because each emulator needs its own install: if A
+    installs the APK and writes a single global marker, device B would then
+    skip its own (required) install. Storing one marker per serial keeps the
+    install skipped only for devices that already got this exact APK.
+    """
+    name = f".apk_hash_{device.serial.replace(':', '_')}"
+    return _APK_HASH_FILE.parent / name
+
+
+def _apk_hash() -> str:
+    """Stable hash of the current debug APK; used to skip reinstalling when the
+    APK hasn't changed since the last install.
+
+    The APK is ~90 MB, so each `adb install -r` costs several seconds and runs
+    twice per test (reset_state + emu_a). Within a session the APK is unchanged,
+    so caching it removes that overhead without changing test behavior.
+    """
+    try:
+        import hashlib
+
+        return hashlib.sha256(Path(APK_PATH).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+def _mark_apk_installed(device: AdbDevice):
+    marker = _apk_hash_file(device)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_apk_hash())
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "drive_finality: assert full Google Drive MD5/non-partial finality "
+        "(slower; only run on the few tests that need it)",
+    )
 
 
 def _enable_tracing(device: AdbDevice):
@@ -201,6 +251,17 @@ def _verify_nextcloud_account(device: AdbDevice):
 
 
 @pytest.fixture
+def fresh_sync_config(serial_a):
+    """Wipe the device's folder selection + sync settings so SAF folder
+    selection runs fresh.
+
+    Opt-in for tests that exercise folder selection. The default reset keeps
+    sync configured across tests so the slow SAF picker is skipped.
+    """
+    _clear_sync_state(AdbDevice(serial_a), keep_config=False)
+
+
+@pytest.fixture
 def reset_state(serial_a, oracle):
     """Reset device A and the shared Drive folder before a test.
 
@@ -240,17 +301,34 @@ def reset_state_b(serial_b):
     logger.info("Device B state reset complete")
 
 
-def _clear_sync_state(device: AdbDevice):
-    """Remove persisted sync config so SAF folder selection runs fresh."""
+def _clear_sync_state(device: AdbDevice, keep_config: bool = True):
+    """Reset per-test app state.
+
+    By default KEEPS the folder selection (drive_index.json) and sync settings
+    (sync_settings.xml) so the app does not re-run the slow Nextcloud SAF folder
+    picker on every test. Stale retry/checkpoint/journal artifacts and
+    downloaded documents are still removed. Pass keep_config=False (via the
+    fresh_sync_config fixture) for tests that exercise folder selection itself.
+
+    When wiping the config we also force-stop the app: the folder selection
+    lives in the running process's memory too, so deleting drive_index.json on
+    disk alone would leave the previous test's selection visible to the next
+    test's UI navigation.
+    """
+    state_files = (
+        "files/sync_retry.xml "
+        "shared_prefs/sync_checkpoint.xml "
+        "files/sync_journal.json"
+    )
+    if not keep_config:
+        state_files += " files/drive_index.json shared_prefs/sync_settings.xml"
     device.shell(
-        f"run-as {APP_PACKAGE} rm -f files/drive_index.json "
-        f"shared_prefs/sync_settings.xml "
-        f"shared_prefs/sync_retry.xml "
-        f"shared_prefs/sync_checkpoint.xml "
-        f"files/sync_journal.json 2>/dev/null; "
+        f"run-as {APP_PACKAGE} rm -f {state_files} 2>/dev/null; "
         f"run-as {APP_PACKAGE} rm -rf files/documents 2>/dev/null; true"
     )
-    logger.info("Sync state cleared on %s", device.serial)
+    if not keep_config:
+        device.shell(f"am force-stop {APP_PACKAGE} || true")
+    logger.info("Sync state cleared on %s (keep_config=%s)", device.serial, keep_config)
 
 
 def _ensure_local_folder(device: AdbDevice):
@@ -274,7 +352,14 @@ def _ensure_apk(device: AdbDevice):
                 f"gradle assembleDebug failed:\n{result.stdout}\n{result.stderr}"
             )
         logger.info("APK built at %s", APK_PATH)
+    # Skip the (expensive, ~90 MB) reinstall when the APK is unchanged since
+    # the last install on THIS device. The marker files live in tmp/, which is
+    # git-ignored, so the cache is per-session/per-machine only.
+    if _apk_hash_file(device).exists() and _apk_hash_file(device).read_text().strip() == _apk_hash():
+        logger.info("APK unchanged on %s — skipping reinstall", device.serial)
+        return
     device.install_apk(APK_PATH)
+    _mark_apk_installed(device)
     logger.info("APK installed on %s", device.serial)
 
 

@@ -29,6 +29,17 @@ class AdbDevice:
             args.append("-c")
         return self.exec(*args, timeout=10)
 
+    def logcat_filtered(self, tag: str, clear: bool = False) -> str:
+        """Read only one tag from the logcat buffer.
+
+        `adb logcat -d -s <tag>` is much cheaper than dumping the whole buffer
+        every second, which the sync watchers poll repeatedly.
+        """
+        args = ["logcat", "-d", "-s", tag]
+        if clear:
+            args.insert(1, "-c")
+        return self.exec(*args, timeout=10)
+
     def logcat_clear(self):
         self.exec("logcat", "-c", "-b", "all", timeout=5)
 

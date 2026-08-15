@@ -176,6 +176,49 @@ class NextcloudOracle:
             return None
         return None
 
+    def list_folder_with_lengths(self, path: str = "/PicPocketTest") -> dict[str, Optional[int]]:
+        """Return {filename: content_length} for the files directly under `path`
+        using a single Depth:1 PROPFIND.
+
+        Batches the per-file _child_length calls so integrity checks of an
+        N-file doc folder cost one listing instead of N.
+        """
+        resp = requests.request(
+            "PROPFIND",
+            self._webdav_url(path),
+            auth=self.auth,
+            headers={"Depth": "1"},
+            timeout=10,
+        )
+        if resp.status_code != 207:
+            return {}
+        root = ET.fromstring(resp.content)
+        ns = {"d": "DAV:"}
+        parent_href = self._parent_href(path)
+        result: dict[str, Optional[int]] = {}
+        for resp_elem in root.findall(".//d:response", ns):
+            href = resp_elem.find("d:href", ns)
+            if href is None:
+                continue
+            href_text = href.text.rstrip("/")
+            if href_text == parent_href.rstrip("/"):
+                continue
+            name = href_text.split("/")[-1]
+            if not name:
+                continue
+            rt = resp_elem.find("d:propstat/d:prop/d:resourcetype", ns)
+            if rt is not None and rt.find("d:collection", ns) is not None:
+                continue
+            length_el = resp_elem.find("d:propstat/d:prop/d:getcontentlength", ns)
+            if length_el is not None and length_el.text is not None:
+                try:
+                    result[name] = int(length_el.text)
+                except ValueError:
+                    result[name] = None
+            else:
+                result[name] = None
+        return result
+
     def verify_file_complete(
         self, path: str, expected_bytes: int = 1, timeout: float = 60.0
     ) -> bool:

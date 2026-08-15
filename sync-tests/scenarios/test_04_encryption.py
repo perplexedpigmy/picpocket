@@ -29,7 +29,7 @@ class TestEncryption:
         emu_a.import_pdf("test-enc.pdf")
         time.sleep(3)
         sync_with_false_mutex_retry(emu_a, watcher_a)
-        assert_drive_verified(oracle)
+        assert_drive_verified(oracle, drive_finality=True)
 
         emu_a.open_settings()
         emu_a.d(text="Sync").click()
