@@ -23,17 +23,30 @@ class NextcloudOracle:
         base_url: str = "http://localhost:8080",
         user: str = "testuser",
         password: str = "testpass123",
+        subdir: str = "",
     ):
         self.base_url = base_url
+        self.user = user
         self.auth = HTTPBasicAuth(user, password)
         self.webdav_base = f"{base_url}/remote.php/dav/files/{user}"
+        # Worker isolation: subdir is this worker's root folder relative to the
+        # shared PicPocketTest mount (e.g. "w1"). Empty = the default root.
+        # root is the full WebDAV folder path, so "w2" becomes PicPocketTest/w2.
+        self.root = f"PicPocketTest/{subdir}" if subdir else "PicPocketTest"
+
+    def _map_path(self, path: str) -> str:
+        """Rewrite a caller-supplied /PicPocketTest/... path onto this worker's
+        root folder (e.g. /PicPocketTest/w1/...)."""
+        if self.root != "PicPocketTest" and path.startswith("/PicPocketTest"):
+            return "/" + self.root + path[len("/PicPocketTest"):]
+        return path
 
     def _webdav_url(self, path: str) -> str:
-        return f"{self.webdav_base}/{path.lstrip('/')}"
+        return f"{self.webdav_base}/{self._map_path(path).lstrip('/')}"
 
     def _parent_href(self, path: str) -> str:
         """Return the href that PROPFIND returns for the collection itself."""
-        return f"/remote.php/dav/files/testuser/{path.lstrip('/')}"
+        return f"/remote.php/dav/files/{self.user}/{self._map_path(path).lstrip('/')}"
 
     def file_exists(self, path: str) -> bool:
         resp = requests.request(

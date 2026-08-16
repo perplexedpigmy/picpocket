@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -21,17 +22,25 @@ APK_PATH = str(_project_root / "app/build/outputs/apk/debug/app-debug.apk")
 
 @pytest.fixture(scope="session", autouse=True)
 def nextcloud_infra():
-    """Session-scoped Nextcloud infrastructure (start/teardown)."""
+    """Session-scoped Nextcloud infrastructure (start/teardown).
+
+    start() is idempotent (docker compose up + an already-set-up fast path), so
+    parallel workers can each call it safely. Teardown skips docker compose down
+    for a parallel worker (NEXTCLOUD_SUBDIR set): the stack is shared, and a
+    worker finishing first must not tear it down under a sibling; the serial
+    full-gate session owns the stop.
+    """
     nextcloud.start()
     yield
     nextcloud.empty_drive_trash()
-    nextcloud.stop()
+    if not os.environ.get("NEXTCLOUD_SUBDIR", "").strip():
+        nextcloud.stop()
 
 
 @pytest.fixture(scope="session")
 def oracle():
     from oracle.nextcloud_oracle import NextcloudOracle
-    return NextcloudOracle()
+    return NextcloudOracle(subdir=os.environ.get("NEXTCLOUD_SUBDIR", ""))
 
 
 @pytest.fixture(scope="session")
@@ -306,15 +315,18 @@ def _clear_sync_state(device: AdbDevice, keep_config: bool = True):
 
     By default KEEPS the folder selection (drive_index.json) and sync settings
     (sync_settings.xml) so the app does not re-run the slow Nextcloud SAF folder
-    picker on every test. Stale retry/checkpoint/journal artifacts and
-    downloaded documents are still removed. Pass keep_config=False (via the
-    fresh_sync_config fixture) for tests that exercise folder selection itself.
+    picker on every test. Stale retry/checkpoint/journal artifacts, the
+    encryption passphrase store, and downloaded documents are still removed.
+    Pass keep_config=False (via the fresh_sync_config fixture) for tests that
+    exercise folder selection itself.
 
-    When wiping the config we also force-stop the app: the folder selection
-    lives in the running process's memory too, so deleting drive_index.json on
-    disk alone would leave the previous test's selection visible to the next
-    test's UI navigation.
+    Force-stop happens FIRST on every reset, not just config wipes: app
+    singletons (EncryptionManager, LocalDriveIndex, the PassphraseStore prefs)
+    cache state in memory loaded once at process start, so a still-running app
+    from a previous test keeps stale state even though its config files were
+    kept, and file deletions only take effect once the process restarts.
     """
+    device.shell(f"am force-stop {APP_PACKAGE} || true")
     state_files = (
         "files/sync_retry.xml "
         "shared_prefs/sync_checkpoint.xml "
@@ -322,12 +334,24 @@ def _clear_sync_state(device: AdbDevice, keep_config: bool = True):
     )
     if not keep_config:
         state_files += " files/drive_index.json shared_prefs/sync_settings.xml"
+    # The encryption passphrase is persisted in an EncryptedSharedPreferences
+    # file and auto-restored at process start (SyncViewModel.init), so a test
+    # that enables encryption (test_04) would leak encrypted sync into every
+    # later test no matter how often the app is force-stopped. Remove the store
+    # so each test starts unencrypted unless it sets a passphrase itself.
+    state_files += " shared_prefs/drive_passphrase_prefs.xml"
     device.shell(
         f"run-as {APP_PACKAGE} rm -f {state_files} 2>/dev/null; "
         f"run-as {APP_PACKAGE} rm -rf files/documents 2>/dev/null; true"
     )
-    if not keep_config:
-        device.shell(f"am force-stop {APP_PACKAGE} || true")
+    if keep_config:
+        # drive_index.json is kept (it holds the folder selection); reset its
+        # passphrase generation so a cleared passphrase can't leave a stale
+        # count behind in the kept index.
+        device.shell(
+            f"run-as {APP_PACKAGE} sed -i 's/\"passphraseCount\": [0-9]*/\"passphraseCount\": 0/' "
+            f"files/drive_index.json 2>/dev/null || true"
+        )
     logger.info("Sync state cleared on %s (keep_config=%s)", device.serial, keep_config)
 
 

@@ -19,6 +19,10 @@ DEVICES = [
 ]
 SNAPSHOT = "sync_test_ready"
 
+# Worker pool: a parallel pytest session picks its emulator via EMULATOR_SERIAL
+# and must NOT kill sibling workers' emulators (kill_all_emulators would).
+AVD_BY_SERIAL = {f"emulator-{d['port']}": d for d in DEVICES}
+
 ANDROID_SDK_ROOT = Path(
     os.environ.get("ANDROID_SDK_ROOT") or os.environ.get("ANDROID_HOME")
     or Path.home() / ".local/android-sdk"
@@ -180,9 +184,42 @@ def _wait_for_launched(proc: subprocess.Popen, serial: str, log_file) -> None:
 def boot_from_snapshot() -> str:
     """Single-device entry point: kill any running emulator, boot testPixel7,
     return its serial. This is the default session boot (one device); the
-    second device is only booted on demand by device B (see boot_device_b)."""
+    second device is only booted on demand by device B (see boot_device_b).
+
+    Honors EMULATOR_SERIAL (worker pool): boots ONLY that serial's AVD, killing
+    just that slot, so parallel workers keep each other's emulators alive.
+    """
+    serial = os.environ.get("EMULATOR_SERIAL", "").strip()
+    if serial:
+        device = AVD_BY_SERIAL.get(serial)
+        if device is None:
+            raise RuntimeError(
+                f"Unknown EMULATOR_SERIAL {serial!r}; pool={sorted(AVD_BY_SERIAL)}"
+            )
+        _kill_serial(serial)
+        return boot(device["avd"], device["port"])
     kill_all_emulators()
     return boot(DEVICES[0]["avd"], DEVICES[0]["port"])
+
+
+def _kill_serial(serial: str) -> None:
+    """Kill only the emulator bound to `serial`, then wait for its port to free.
+
+    Unlike kill_all_emulators this never touches sibling workers' emulators.
+    """
+    _adb("-s", serial, "emu", "kill", timeout=10)
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        proc = subprocess.run(
+            ["pgrep", "-f", f"qemu-system.*-port {serial.split('-')[-1]}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if not proc.stdout.strip():
+            return
+        time.sleep(2)
+    subprocess.run(["pkill", "-9", "-f", f"qemu-system.*-port {serial.split('-')[-1]}"],
+                   capture_output=True, text=True, timeout=10)
+    time.sleep(5)
 
 
 def boot_device_b() -> str:
@@ -191,6 +228,12 @@ def boot_device_b() -> str:
     Called lazily the first time a two-device test asks for device B, so
     single-device tests never drag a second emulator into the session.
     """
+    if os.environ.get("NEXTCLOUD_SUBDIR", "").strip():
+        raise RuntimeError(
+            "Two-device tests cannot run in a parallel worker: each worker owns "
+            "one emulator slot and device B would collide with a sibling worker. "
+            "Run two-device tests in the serial full-gate phase instead."
+        )
     return boot(DEVICES[1]["avd"], DEVICES[1]["port"])
 
 

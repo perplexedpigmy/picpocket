@@ -288,7 +288,17 @@ class DriveFileManager @Inject constructor(
     }
 
     private suspend fun readBytesGuarded(uri: Uri): ByteArray? {
-        val stream = context.contentResolver.openInputStream(uri) ?: return null
+        // openInputStream throws (e.g. FileNotFoundException from the bridge's
+        // DocumentsProvider) when the cached folder listing is stale and the
+        // file was deleted server-side. Treat that as "unreadable" (null) so a
+        // single stale bridge listing aborts the sync attempt instead of the
+        // whole performSync; the next sync's refresh converges the listing.
+        val stream = try {
+            context.contentResolver.openInputStream(uri)
+        } catch (e: Exception) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "readBytesGuarded: open failed (${e.javaClass.simpleName})")
+            null
+        } ?: return null
         return try {
             withTimeout(READ_GUARD_MS) {
                 runInterruptible { stream.use { it.readBytes() } }

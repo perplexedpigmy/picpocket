@@ -1,7 +1,9 @@
 """Nextcloud test infrastructure management."""
 
+import fcntl
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -121,6 +123,26 @@ DOCKERFILE_PATH = Path(__file__).parent.parent / "Dockerfile.nextcloud-rclone"
 BUILD_CONTEXT = Path(__file__).parent.parent
 IMAGE_TAG = "nextcloud-rclone:test"
 
+# Worker isolation: each parallel pytest session operates on its OWN subfolder
+# of the shared Drive root (NEXTCLOUD_SUBDIR=w1 -> gtest:PicPocketTest/w1).
+# Empty/absent = the default worker rooted at PicPocketTest itself (legacy
+# single-session behavior). One rclone mount + one Nextcloud external-storage
+# mount stays shared; only the worker's own folder is read/written/purged, so
+# devices.json + sync-lock.json are per-folder and cannot collide.
+DRIVE_SUBDIR = os.environ.get("NEXTCLOUD_SUBDIR", "").strip()
+
+
+def _worker_remote_path() -> str:
+    """rclone remote path of this worker's root folder."""
+    base = f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"
+    return f"{base}/{DRIVE_SUBDIR}" if DRIVE_SUBDIR else base
+
+
+def _worker_mount_dir() -> Path:
+    """Host mount path of this worker's root folder (kept in existence so the
+    SAF picker can select it; only its CONTENTS are purged)."""
+    return RCLONE_MOUNT_POINT / DRIVE_SUBDIR if DRIVE_SUBDIR else RCLONE_MOUNT_POINT
+
 
 def _is_rclone_mounted() -> bool:
     """Check if rclone mount is already active at RCLONE_MOUNT_POINT."""
@@ -177,8 +199,28 @@ def _verify_rclone_io() -> bool:
         return False
 
 
+_MOUNT_LOCK = Path(__file__).parent.parent.parent / "tmp" / ".rclone_mount.lock"
+
+
 def _ensure_rclone_mount() -> None:
-    """Mount rclone to the test mount point if not already mounted."""
+    """Mount rclone to the test mount point if not already mounted.
+
+    Serialized with a file lock: the mount is a single shared resource across
+    parallel worker sessions. Without the lock, two workers starting together
+    could each see the mount as briefly down and force-unmount/re-mount it
+    concurrently, tearing it down under the other's in-flight readback.
+    """
+    _MOUNT_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(_MOUNT_LOCK, "w") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            _ensure_rclone_mount_locked()
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+
+
+def _ensure_rclone_mount_locked() -> None:
+    """Actual mount/verify logic; runs under the rclone mount lock."""
     mounted = _is_rclone_mounted()
     if mounted:
         logger.info("rclone process running at %s", RCLONE_MOUNT_POINT)
@@ -229,13 +271,13 @@ def _ensure_rclone_mount() -> None:
 
 
 def drive_state() -> list[dict]:
-    """Recursively list the Drive PicPocketTest folder via rclone lsjson.
+    """Recursively list this worker's Drive folder via rclone lsjson.
 
     Reads Google Drive directly (independent of the FUSE mount), returning
     file rows with Size, MimeType and MD5 keys.
     """
     result = _run(
-        ["rclone", "lsjson", "--recursive", "--hash", f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+        ["rclone", "lsjson", "--recursive", "--hash", _worker_remote_path()],
         check=False,
     )
     if result.returncode != 0:
@@ -253,13 +295,13 @@ def drive_state() -> list[dict]:
 
 
 def _drive_listing() -> list[dict]:
-    """Raw recursive lsjson of the Drive PicPocketTest folder, INCLUDING dirs.
+    """Raw recursive lsjson of this worker's Drive folder, INCLUDING dirs.
 
     Used for emptiness checks where directories must not be ignored.
     Returns [] on any failure (like drive_state, but without the IsDir filter).
     """
     result = _run(
-        ["rclone", "lsjson", "--recursive", f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+        ["rclone", "lsjson", "--recursive", _worker_remote_path()],
         check=False,
     )
     if result.returncode != 0:
@@ -275,21 +317,49 @@ def _drive_listing() -> list[dict]:
         return []
 
 
+def _drive_listing_strict() -> list[dict]:
+    """_drive_listing that raises on rclone failure instead of returning [].
+
+    purge_drive must never "succeed" because a transient rclone error made the
+    emptiness check look empty. Each `rclone lsjson` invocation lists Google
+    Drive fresh (no cross-invocation dir cache), so this is the live backend.
+    """
+    result = _run(
+        ["rclone", "lsjson", "--recursive", _worker_remote_path()],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "rclone lsjson failed while verifying Drive purge "
+            f"(rc={result.returncode}): {(result.stderr or result.stdout or '').strip()}"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"rclone lsjson parse error while verifying Drive purge: {e}"
+        ) from e
+
+
 def purge_drive(timeout: int = 120) -> None:
-    """Definitively empty PicPocketTest on Google Drive and reconcile Nextcloud.
+    """Definitively empty THIS worker's Drive folder and reconcile Nextcloud.
 
     Deletes through the FUSE mount (rmtree/unlink on the mount point) so the
     mount's VFS/dir cache and the remote folder ID stay in sync. An out-of-band
     `rclone purge` + `mkdir` would recreate the folder under a new Drive ID,
     desync the running mount, and silently break all subsequent uploads, so it
-    must not be used. Includes empty directories. Re-scans Nextcloud so no
-    phantom filecache entries remain. Raises TimeoutError if Drive stays
-    non-empty.
+    must not be used. Includes empty directories. The worker's root folder
+    itself is kept (created if missing) so the SAF picker can select it; only
+    its contents are removed. Re-scans Nextcloud so no phantom filecache
+    entries remain. Raises TimeoutError if Drive stays non-empty.
     """
+    root = _worker_mount_dir()
+    root.mkdir(parents=True, exist_ok=True)
+
     def _delete_children() -> None:
-        if not RCLONE_MOUNT_POINT.exists():
+        if not root.exists():
             return
-        for child in list(RCLONE_MOUNT_POINT.iterdir()):
+        for child in list(root.iterdir()):
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
@@ -297,32 +367,34 @@ def purge_drive(timeout: int = 120) -> None:
 
     _delete_children()
     deadline = time.time() + timeout
-    while _drive_listing() and time.time() < deadline:
+    while _drive_listing_strict() and time.time() < deadline:
         logger.warning("Drive not empty after delete, retrying")
         _delete_children()
         time.sleep(5)
-    rows = _drive_listing()
+    rows = _drive_listing_strict()
     if rows:
         names = [r.get("Path", r.get("Name", "?")) for r in rows[:10]]
-        raise TimeoutError(f"Drive PicPocketTest not empty after purge: {names}")
+        raise TimeoutError(f"Drive {DRIVE_SUBDIR or 'PicPocketTest'} not empty after purge: {names}")
     _occ(["files:scan", "--all"], check=False)
-    logger.info("Drive PicPocketTest purged; Nextcloud re-scanned")
+    logger.info("Drive %s purged; Nextcloud re-scanned", DRIVE_SUBDIR or "PicPocketTest")
 
 
 def empty_drive_trash(timeout: int = 120) -> None:
-    """Permanently delete trashed items under PicPocketTest (Drive bin).
+    """Permanently delete trashed items under THIS worker's Drive folder.
 
     Test deletes accumulate in the Drive bin because rclone's default
     --drive-use-trash=true sends deletes to trash. rclone has no native
-    empty-trash command, so list trashed items scoped to PicPocketTest
+    empty-trash command, so list trashed items scoped to the worker folder
     (--drive-trashed-only) and permanently delete them
     (--drive-use-trash=false). Best-effort: logs failures, never raises,
     so a cleanup problem can't fail the test session.
     """
+    worker_remote = _worker_remote_path()
+
     def _trashed_rows() -> list[dict]:
         result = _run(
             ["rclone", "lsjson", "--drive-trashed-only", "--recursive",
-             f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+             worker_remote],
             check=False,
         )
         if result.returncode != 0:
@@ -348,7 +420,7 @@ def empty_drive_trash(timeout: int = 120) -> None:
 
     result = _run(
         ["rclone", "delete", "--drive-trashed-only", "--drive-use-trash=false",
-         f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+         worker_remote],
         check=False,
     )
     if result.returncode != 0:
@@ -371,7 +443,7 @@ def empty_drive_trash(timeout: int = 120) -> None:
 
 
 def purge_remote_dir(rel_path: str) -> bool:
-    """Permanently delete a directory under PicPocketTest via the backend.
+    """Permanently delete a directory under THIS worker's folder via backend.
 
     rclone purge hits the Drive API directly, bypassing the FUSE mount
     listing, so it also removes files that a FUSE-based rmtree missed because
@@ -380,7 +452,7 @@ def purge_remote_dir(rel_path: str) -> bool:
     False if it was already gone. Best-effort: never raises, so a cleanup
     problem can't fail a test.
     """
-    target = f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}/{rel_path}"
+    target = f"{_worker_remote_path()}/{rel_path}"
     check = _run(["rclone", "lsjson", "--recursive", target], check=False)
     if check.returncode != 0:
         return False
@@ -397,18 +469,19 @@ def purge_remote_dir(rel_path: str) -> bool:
 
 
 def purge_folder_via_mount(rel_path: str, timeout: int = 120) -> bool:
-    """Permanently delete a directory under PicPocketTest via the FUSE mount.
+    """Permanently delete a directory under THIS worker's folder via the mount.
 
     Same intent as purge_drive but scoped to a single subfolder, so it does not
-    touch the rest of the remote tree. Deletes through the mount (rmtree on the
-    mount point) to keep the mount's VFS/dir-cache and the remote folder ID in
-    sync, polls Drive until the folder is gone, and re-scans Nextcloud so no
-    phantom filecache entries remain. An out-of-band `rclone purge` must not be
-    used here: it desyncs the running mount's dir-cache, and a later mkdir of
-    the same path silently breaks all subsequent uploads. Returns True if the
-    folder existed and was purged, False otherwise. Never raises.
+    touch the rest of the worker's remote tree. Deletes through the mount
+    (rmtree on the mount point) to keep the mount's VFS/dir-cache and the
+    remote folder ID in sync, polls Drive until the folder is gone, and
+    re-scans Nextcloud so no phantom filecache entries remain. An out-of-band
+    `rclone purge` must not be used here: it desyncs the running mount's
+    dir-cache, and a later mkdir of the same path silently breaks all
+    subsequent uploads. Returns True if the folder existed and was purged,
+    False otherwise. Never raises.
     """
-    target = RCLONE_MOUNT_POINT / rel_path
+    target = _worker_mount_dir() / rel_path
     existed = target.exists()
     if not existed:
         return False

@@ -180,6 +180,20 @@ class SyncWatcher:
         output = self.device.logcat_filtered(SYNC_TAG) or ""
         return not any("performSync" in line for line in output.splitlines())
 
+    def had_sync_denied_but_running(self) -> bool:
+        """True if a sync was refused because another sync is already running.
+
+        The app logs "performSync: already syncing" when the isSyncing guard
+        rejects a broadcast: either a real reconcile is in flight, or a
+        retry-backoff sleep is blocking (it holds isSyncing while sleeping).
+        Either way the caller should wait out the running sync and re-trigger
+        instead of assuming the broadcast failed.
+        """
+        output = self.device.logcat_filtered(SYNC_TAG) or ""
+        return any(
+            "performSync: already syncing" in line for line in output.splitlines()
+        )
+
     def had_sync_in_progress(self) -> bool:
         """True if a performSync is currently running but not yet done.
 

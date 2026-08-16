@@ -48,6 +48,10 @@ class TestEncryption:
         )
         logger.info("Encryption gating on B: %s", result)
 
+        # The gating error renders on the Sync screen; ensure_drive_configured
+        # may leave B on Settings (kept-config fast path), so navigate there.
+        emu_b.open_settings()
+        emu_b.d(text="Sync").click()
         error_text = emu_b.d(textContains="This Drive is encrypted")
         assert error_text.wait(timeout=10.0), "Encryption error not shown on B"
 

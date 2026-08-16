@@ -4,6 +4,7 @@ import time
 import pytest
 
 from devices.pdf_utils import generate_and_push
+from devices.ui import worker_root_folder
 from infra import nextcloud as nc
 from scenarios._integrity import assert_drive_verified
 
@@ -169,7 +170,7 @@ class TestSafToDrive:
         connect_btn.click()
         time.sleep(3)
 
-        emu_a.select_saf_folder("PicPocketTest", timeout)
+        emu_a.select_saf_folder(worker_root_folder(), timeout)
 
         allow_btn = emu_a.d(text="ALLOW")
         if allow_btn.wait(timeout=5):

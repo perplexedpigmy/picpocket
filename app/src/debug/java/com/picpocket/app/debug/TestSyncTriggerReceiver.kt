@@ -3,6 +3,7 @@ package com.picpocket.app.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.picpocket.app.drive.sync.RetryHandler
 import com.picpocket.app.drive.sync.SyncManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -23,6 +24,12 @@ import kotlinx.coroutines.launch
  *
  * The sync runs off the main thread (same as the scheduler path) and is
  * observable via the SyncManager logcat lines the test suite waits on.
+ *
+ * An explicitly triggered sync is always meant to run NOW, so the retry
+ * backoff (exponential sleep before each sync after failures) is reset first;
+ * otherwise a backoff sleep would hold `isSyncing` and silently swallow the
+ * broadcast ("already syncing"). Debug-only: production syncs keep their
+ * backoff semantics.
  */
 class TestSyncTriggerReceiver : BroadcastReceiver() {
 
@@ -30,15 +37,16 @@ class TestSyncTriggerReceiver : BroadcastReceiver() {
     @InstallIn(SingletonComponent::class)
     interface SyncManagerEntryPoint {
         fun syncManager(): SyncManager
+        fun retryHandler(): RetryHandler
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_SYNC_NOW) return
-        val syncManager = EntryPointAccessors
+        val entryPoint = EntryPointAccessors
             .fromApplication(context.applicationContext, SyncManagerEntryPoint::class.java)
-            .syncManager()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            syncManager.performSync()
+            entryPoint.retryHandler().reset()
+            entryPoint.syncManager().performSync()
         }
     }
 

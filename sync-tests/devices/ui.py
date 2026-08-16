@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import time
 from typing import Optional
@@ -12,6 +13,18 @@ from .tracing import SyncWatcher
 logger = logging.getLogger(__name__)
 
 APP_PACKAGE = "com.picpocket.app"
+
+
+def worker_root_folder() -> str:
+    """The sync root folder the app selects in the SAF picker.
+
+    Default worker roots at PicPocketTest itself; a parallel worker
+    (NEXTCLOUD_SUBDIR=w1) roots at PicPocketTest/w1, which keeps its
+    devices.json + sync-lock.json in a private subfolder of the shared Drive
+    root.
+    """
+    subdir = os.environ.get("NEXTCLOUD_SUBDIR", "").strip()
+    return f"PicPocketTest/{subdir}" if subdir else "PicPocketTest"
 
 
 class UiDevice:
@@ -116,14 +129,38 @@ class UiDevice:
         # Explicit component (-n), not an implicit broadcast: on Android 8+ a
         # manifest-declared receiver in a targetSdk 34 app is never delivered
         # an implicit broadcast, but an explicit-component broadcast always is.
-        self.adb.shell(
-            "am broadcast -n com.picpocket.app/.debug.TestSyncTriggerReceiver "
-            "-a com.picpocket.app.action.SYNC_NOW"
-        )
         watcher = SyncWatcher(self.adb)
-        if watcher.wait_for_start(timeout=8.0):
-            logger.info("Sync triggered via broadcast on %s", self.serial)
-            return True
+        for attempt in range(3):
+            self.adb.shell(
+                "am broadcast -n com.picpocket.app/.debug.TestSyncTriggerReceiver "
+                "-a com.picpocket.app.action.SYNC_NOW"
+            )
+            try:
+                watcher.wait_for_start(timeout=8.0)
+                logger.info("Sync triggered via broadcast on %s", self.serial)
+                return True
+            except TimeoutError:
+                # wait_for_start raises when the app refused to start a sync.
+                # The common cause is "already syncing": the isSyncing guard
+                # rejected the broadcast because another sync is in flight
+                # (active reconcile, or a retry-backoff sleep that holds the
+                # guard while sleeping). Wait that sync out (the debug
+                # receiver resets the backoff, so a re-broadcast runs fresh),
+                # then re-broadcast. Any other cause falls through to the UI
+                # dance below.
+                if watcher.had_sync_denied_but_running():
+                    logger.warning(
+                        "Sync already in progress on %s (attempt %d); waiting it out and re-triggering",
+                        self.serial, attempt + 1,
+                    )
+                    try:
+                        watcher.wait_for_sync(timeout=90.0)
+                    except TimeoutError:
+                        logger.warning(
+                            "In-flight sync did not complete within 90s on %s", self.serial
+                        )
+                    continue
+                break
         logger.warning("Broadcast did not start a sync on %s; falling back to UI", self.serial)
         self._go_home(timeout=15.0)
         if not self.open_settings():
@@ -333,29 +370,32 @@ class UiDevice:
         logger.error("SAF: could not tap '%s' on %s: %s", description, self.serial, last_err)
         return False
 
-    def select_saf_folder(self, folder_name: str, timeout: float = 60.0):
+    def select_saf_folder(self, folder_path: str, timeout: float = 60.0):
         """Select a folder in the SAF picker, handling both navigation states.
+
+        folder_path may be nested ("PicPocketTest/w1"): each segment is entered
+        in turn and "USE THIS FOLDER" is only tapped once the breadcrumb shows
+        the final segment, so the Nextcloud root itself is never selected.
 
         Path B (consecutive): picker already open inside the target folder
         (breadcrumb shows it) — "USE THIS FOLDER" is immediately available.
         Path A (first-time): picker opens elsewhere — tap "Show roots", open
         the Nextcloud provider, tap the target folder, confirm with
         "USE THIS FOLDER".
-
-        USE THIS FOLDER is only ever tapped while the breadcrumb shows the
-        target folder, so the Nextcloud root itself is never selected.
         """
+        segments = [s for s in folder_path.split("/") if s]
+        final = segments[-1]
         deadline = time.time() + timeout
         breadcrumb_id = "com.google.android.documentsui:id/breadcrumb_text"
         entered_nextcloud = False
         while time.time() < deadline:
-            breadcrumb = self.d(resourceId=breadcrumb_id, text=folder_name)
+            breadcrumb = self.d(resourceId=breadcrumb_id, text=final)
             if breadcrumb.exists:
                 if self._tap_retry(lambda: self.d(text="USE THIS FOLDER"),
                                    "USE THIS FOLDER"):
                     time.sleep(2)
-                    logger.info("SAF: already inside '%s', tapped USE THIS FOLDER on %s",
-                                folder_name, self.serial)
+                    logger.info("SAF: inside '%s', tapped USE THIS FOLDER on %s",
+                                final, self.serial)
                     return
 
             if not entered_nextcloud:
@@ -367,24 +407,30 @@ class UiDevice:
                     entered_nextcloud = True
                     logger.info("SAF: tapped Nextcloud provider on %s", self.serial)
 
-            target = self.d(text=folder_name)
-            if target.exists and not breadcrumb.exists:
-                if self._tap_retry(lambda: self.d(text=folder_name), folder_name):
-                    time.sleep(3)
-                    logger.info("SAF: tapped folder '%s' in Nextcloud on %s",
-                                folder_name, self.serial)
+            advanced = False
+            for seg in segments:
+                if self.d(resourceId=breadcrumb_id, text=seg).exists:
                     continue
+                if self.d(text=seg).exists:
+                    if self._tap_retry(lambda: self.d(text=seg), seg):
+                        time.sleep(3)
+                        logger.info("SAF: tapped folder '%s' in Nextcloud on %s",
+                                    seg, self.serial)
+                        advanced = True
+                    break
+            if advanced:
+                continue
 
             if entered_nextcloud:
                 texts = [tv.get_text() for tv in
                          self.d(className="android.widget.TextView") if tv.get_text()]
                 logger.warning(
                     "SAF: '%s' not found after entering Nextcloud on %s — visible texts: %s",
-                    folder_name, self.serial, texts,
+                    final, self.serial, texts,
                 )
 
             time.sleep(2)
-        raise TimeoutError(f"Could not select folder '{folder_name}' in SAF picker")
+        raise TimeoutError(f"Could not select folder '{folder_path}' in SAF picker")
 
     def _select_nextcloud_root(self, timeout: float):
-        self.select_saf_folder("PicPocketTest", timeout)
+        self.select_saf_folder(worker_root_folder(), timeout)
