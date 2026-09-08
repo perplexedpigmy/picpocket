@@ -98,6 +98,134 @@ class SAFWriteProbeTest {
     }
 
     /**
+     * Mutex lock-once probe (same device): create a DIRECTORY, then create
+     * the same directory name again via SAF. If the provider surfaces the
+     * duplicate as a failure (null), exclusive-create works (MKCOL 405); if
+     * it returns the existing dir or a "(1)" conflict copy, it doesn't.
+     */
+    @Test
+    fun createDirTwiceSameDevice() {
+        val tree = requireTreeUri()
+        log("LOCK: children before=${childNames(tree)}")
+        val first = createDoc(tree, PROBE_LOCK_DIR, DocumentsContract.Document.MIME_TYPE_DIR)
+        log("LOCK: 1st dir create -> ${describe(first)}")
+        SystemClock.sleep(2000)
+        val second = createDoc(tree, PROBE_LOCK_DIR, DocumentsContract.Document.MIME_TYPE_DIR)
+        log("LOCK: 2nd dir create (same name) -> ${describe(second)}")
+        log("LOCK: children after=${childNames(tree)}")
+        log("done")
+    }
+
+    /**
+     * Mutex lock-once probe (same device, file variant): create a FILE twice.
+     * A file's second create either returns the existing doc (overwrite),
+     * fails, or makes a "(1)" copy — this classifies which.
+     */
+    @Test
+    fun createFileTwiceSameDevice() {
+        val tree = requireTreeUri()
+        log("LOCK: children before=${childNames(tree)}")
+        val first = createDoc(tree, PROBE_LOCK_FILE, "application/octet-stream")
+        log("LOCK: 1st file create -> ${describe(first)}")
+        writeMarker(first, "A1")
+        SystemClock.sleep(2000)
+        val second = createDoc(tree, PROBE_LOCK_FILE, "application/octet-stream")
+        log("LOCK: 2nd file create (same name) -> ${describe(second)}")
+        writeMarker(second, "A2")
+        log("LOCK: children after=${childNames(tree)}")
+        log("done")
+    }
+
+    /**
+     * Mutex lock-once probe (OTHER device): attempt to create names that
+     * already exist on the server — some created by device A via SAF, some
+     * created out-of-band (curl MKCOL/PUT, guaranteed invisible to this
+     * device's client DB). Logs whether this device's DB sees each name
+     * before the attempt, what createDocument returns, and the children
+     * afterwards, so the host can tell "failed" from "returned existing"
+     * from "made a (1) conflict copy".
+     */
+    @Test
+    fun createExistingNamesCrossDevice() {
+        val tree = requireTreeUri()
+        for (name in CROSS_DEVICE_DIRS) {
+            log("LOCK: [dir $name] children before=${childNames(tree)}")
+            val attempt = createDoc(tree, name, DocumentsContract.Document.MIME_TYPE_DIR)
+            log("LOCK: [dir $name] create -> ${describe(attempt)}")
+            log("LOCK: [dir $name] children after=${childNames(tree)}")
+        }
+        for (name in CROSS_DEVICE_FILES) {
+            log("LOCK: [file $name] children before=${childNames(tree)}")
+            val attempt = createDoc(tree, name, "application/octet-stream")
+            log("LOCK: [file $name] create -> ${describe(attempt)}")
+            writeMarker(attempt, "B")
+            log("LOCK: [file $name] children after=${childNames(tree)}")
+        }
+        log("done")
+    }
+
+    private fun createDoc(treeUri: Uri, name: String, mime: String): Uri? {
+        val parent = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri, DocumentsContract.getTreeDocumentId(treeUri),
+        )
+        return try {
+            DocumentsContract.createDocument(context.contentResolver, parent, mime, name)
+        } catch (e: Exception) {
+            log("createDoc($name) THREW ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    private fun childNames(treeUri: Uri): List<String> {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri, DocumentsContract.getTreeDocumentId(treeUri),
+        )
+        val names = mutableListOf<String>()
+        try {
+            context.contentResolver.query(childrenUri, null, null, null, null)
+                ?.use { c ->
+                    while (c.moveToNext()) {
+                        val n = c.getString(
+                            c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                        )
+                        names.add(n)
+                    }
+                }
+        } catch (e: Exception) {
+            log("childNames THREW ${e.javaClass.simpleName}: ${e.message}")
+        }
+        return names
+    }
+
+    private fun describe(uri: Uri?): String {
+        if (uri == null) return "NULL"
+        return try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                if (!c.moveToFirst()) return "URI(query empty)"
+                val name = c.getString(
+                    c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                )
+                val mime = c.getString(
+                    c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE),
+                )
+                "name='$name' mime=$mime uri=$uri"
+            } ?: "URI(query null)"
+        } catch (e: Exception) {
+            "URI(query THREW ${e.javaClass.simpleName}: ${e.message})"
+        }
+    }
+
+    private fun writeMarker(uri: Uri?, marker: String) {
+        if (uri == null) return
+        try {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(marker.toByteArray()) }
+            log("wrote marker '$marker' to $uri")
+        } catch (e: Exception) {
+            log("writeMarker THREW ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /**
      * Hypothesis probe A: repeated in-place overwrite of the SAME existing
      * document via openOutputStream("rwt"->"wt"->plain) — the working-tree
      * writeFileTo path. If the server is left at 0/stale bytes at the end,
@@ -322,6 +450,10 @@ class SAFWriteProbeTest {
         private const val PROBE_PLACEHOLDER = "probePlaceholder.bin"
         private const val PROBE_RAPID = "probeRapid.bin"
         private const val PROBE_PACED = "probePaced.bin"
+        private const val PROBE_LOCK_DIR = "probeLock"
+        private const val PROBE_LOCK_FILE = "probeLockF"
+        private const val PROBE_LOCK_DIR2 = "probeLockY"
+        private const val PROBE_LOCK_FILE2 = "probeLockG"
         private const val PAUSE_MS = 2_000L
         private const val FILL_WAIT_MS = 15_000L
         private const val REWRITE_CYCLES = 20
@@ -330,8 +462,12 @@ class SAFWriteProbeTest {
         private const val PACED_PAUSE_MS = 1_300L
         private const val BURST_FILES = 50
 
+        private val CROSS_DEVICE_DIRS = listOf(PROBE_LOCK_DIR, PROBE_LOCK_DIR2)
+        private val CROSS_DEVICE_FILES = listOf(PROBE_LOCK_FILE, PROBE_LOCK_FILE2)
+
         private val CLEANUP_NAMES = listOf(
             PROBE_A, PROBE_B, PROBE_D, PROBE_RW, PROBE_RC, PROBE_PLACEHOLDER, PROBE_RAPID, PROBE_PACED,
+            PROBE_LOCK_DIR, PROBE_LOCK_FILE, PROBE_LOCK_DIR2, PROBE_LOCK_FILE2,
         ) + List(BURST_FILES) { "burst_%03d.bin".format(it) }
 
         val C1: ByteArray = ByteArray(131) { (it % 251).toByte() }

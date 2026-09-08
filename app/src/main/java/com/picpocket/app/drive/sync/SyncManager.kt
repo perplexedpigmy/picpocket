@@ -17,9 +17,13 @@ import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.SyncState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -93,7 +97,19 @@ class SyncManager @Inject constructor(
                 return
             }
             var uploadFailure: String? = null
-            withContext(Dispatchers.IO) {
+            coroutineScope {
+                // Renew the lock lease for the whole sync: a sync longer than
+                // the stale timeout would otherwise look crashed and be taken
+                // over mid-upload. This only rewrites our own token file; it
+                // never aborts or interferes with the sync.
+                val heartbeatJob = launch(Dispatchers.IO) {
+                    while (isActive) {
+                        delay(HEARTBEAT_INTERVAL_MS)
+                        syncMutex.heartbeat()
+                    }
+                }
+                try {
+                    withContext(Dispatchers.IO) {
                 retryHandler.waitBeforeRetry()
                 Tracing.d(Category.DRIVE_API, TAG, "performSync: waitBeforeRetry done")
 
@@ -148,14 +164,18 @@ class SyncManager @Inject constructor(
                 deviceRegistry.syncRegistryToDrive(passphraseSet)
 
                 retryHandler.onSuccess()
+                }
+                } finally {
+                    heartbeatJob.cancel()
+                }
+                val failure = uploadFailure
+                if (failure != null) {
+                    _syncState.value = SyncState.Error(failure)
+                    return@coroutineScope
+                }
+                _syncState.value = SyncState.Idle
+                Tracing.d(Category.DRIVE_API, TAG, "performSync: complete")
             }
-            val failure = uploadFailure
-            if (failure != null) {
-                _syncState.value = SyncState.Error(failure)
-                return
-            }
-            _syncState.value = SyncState.Idle
-            Tracing.d(Category.DRIVE_API, TAG, "performSync: complete")
         } catch (_: SyncAborted) {
             // state already set by gating code, fall through
         } catch (e: Exception) {
@@ -275,3 +295,7 @@ class SyncManager @Inject constructor(
 }
 
 private class SyncAborted : Exception()
+
+// Renewal cadence for the mutex lease during a long sync (matches the token's
+// stale-timeout budget in SyncMutex: 30s beats 300s by a wide margin).
+private const val HEARTBEAT_INTERVAL_MS = 30_000L

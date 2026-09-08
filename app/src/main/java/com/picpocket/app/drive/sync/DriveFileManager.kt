@@ -50,7 +50,9 @@ class DriveFileManager @Inject constructor(
                 val name = if (nameIdx >= 0) cursor.getString(nameIdx) else "?"
                 val mime = if (mimeIdx >= 0) cursor.getString(mimeIdx) else "?"
                 Tracing.d(Category.DRIVE_FILES, TAG, "listDocFolders: name=$name mime=$mime")
-                if (DocumentsContract.Document.MIME_TYPE_DIR == mime) {
+                // Skip hidden (dot-prefixed) directories: the mutex lock lives
+                // in .sync-lock and must never be mistaken for a doc folder.
+                if (DocumentsContract.Document.MIME_TYPE_DIR == mime && !name.startsWith(".")) {
                     names.add(name)
                 }
             }
@@ -74,14 +76,24 @@ class DriveFileManager @Inject constructor(
     suspend fun prefetchRemoteFiles(treeUri: String): Map<String, List<DocumentFile>> = withContext(Dispatchers.IO) {
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyMap()
         try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Throwable) { }
-        root.listFiles()
-            .filter { it.isDirectory }
-            .mapNotNull { folder ->
-                val name = folder.name ?: return@mapNotNull null
-                try { context.contentResolver.refresh(folder.uri, null, null) } catch (_: Throwable) { }
-                name to folder.listFiles().toList()
+        // The bridge (Nextcloud client DB) can serve duplicate rows for the
+        // same folder — a stale one listing nothing and a fresh one with the
+        // real children. A plain toMap() lets the LAST duplicate win, so an
+        // empty stale row could poison the whole cache. Dedupe by name and
+        // prefer a non-empty listing; only keep an empty one if it is the
+        // only row we saw.
+        val result = mutableMapOf<String, List<DocumentFile>>()
+        for (folder in root.listFiles()) {
+            if (!folder.isDirectory) continue
+            val name = folder.name ?: continue
+            try { context.contentResolver.refresh(folder.uri, null, null) } catch (_: Throwable) { }
+            val children = folder.listFiles().toList()
+            val existing = result[name]
+            if (existing == null || children.isNotEmpty()) {
+                result[name] = children
             }
-            .toMap()
+        }
+        result
     }
 
     suspend fun listFileNames(
@@ -89,7 +101,11 @@ class DriveFileManager @Inject constructor(
         remoteCache: Map<String, List<DocumentFile>>? = null,
     ): List<String> = withContext(Dispatchers.IO) {
         val cached = remoteCache?.get(docId)
-        if (cached != null) {
+        // Only trust a NON-EMPTY cached listing: a stale duplicate row in the
+        // bridge can cache an empty child list, and trusting it would make
+        // every sync skip the doc ("undecodable metadata") forever. Fall
+        // through to a fresh provider read when the cache is empty.
+        if (cached != null && cached.isNotEmpty()) {
             return@withContext cached.filter { !it.isDirectory }.mapNotNull { it.name }
         }
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))

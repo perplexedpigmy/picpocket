@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 SYNC_COMPLETE = re.compile(r"performSync:\s*complete")
 SYNC_STARTED = re.compile(r"performSync:\s*starting")
 SYNC_ERROR = re.compile(r"performSync:\s*error")
+# Logged only after the mutex acquire succeeded (gating checks follow), so its
+# presence proves the device holds the lock.
+SYNC_GATING = re.compile(r"performSync:\s*gating")
 MUTEX_LOCKED = re.compile(r"mutex locked by another device")
 LOCK_ENOENT = re.compile(r"performSync:\s*error open failed: ENOENT")
 DOWNLOAD_ERR = re.compile(r"performSync:\s*error Error downloading file:")
@@ -22,6 +25,7 @@ RECONCILE_ABORT = re.compile(
 )
 WRONG_PASSPHRASE = re.compile(r"performSync:\s*stale passphrase generation")
 ENCRYPTION_GATING = re.compile(r"Drive encrypted, passphrase required")
+NO_NETWORK = re.compile(r"performSync:\s*no network")
 REGISTRY_CORRUPT = re.compile(r"devices\.json.*(?:corrupt|could not be read)")
 
 # Any of these patterns means the current sync did NOT end in
@@ -291,8 +295,8 @@ def sync_with_false_mutex_retry(emu, watcher, timeout: float = 60.0,
                         f"Sync did not complete after {retries} attempts: {exc}"
                     ) from exc
                 logger.warning(
-                    "Sync incomplete (spurious lock abort or missed tap, attempt %d/%d); settling %.0fs and retrying",
-                    attempt, retries, settle,
+                    "Sync incomplete (spurious lock abort or missed tap, attempt %d/%d); settling %.0fs and retrying. Failure line: %s",
+                    attempt, retries, settle, watcher._sync_failure_line(),
                 )
                 time.sleep(settle)
                 continue
@@ -359,6 +363,37 @@ def wait_for_pattern_with_false_mutex_retry(emu, watcher, pattern: re.Pattern,
             logger.warning(
                 "Pattern %s not seen (spurious lock abort or missed tap, attempt %d/%d); settling %.0fs and retrying",
                 pattern.pattern, attempt, retries, settle,
+            )
+            time.sleep(settle)
+    raise TimeoutError("unreachable")
+
+
+def pattern_with_convergence(emu, watcher, pattern: re.Pattern,
+                             attempts: int = 4, timeout: float = 40.0,
+                             settle: float = 10.0) -> str:
+    """Trigger syncs until a logcat pattern appears, retrying for convergence.
+
+    The Nextcloud client (SAF bridge) serves folder listings from its own DB,
+    which lags server writes by one refresh cycle. A sync that reads the stale
+    listing completes as a no-op without producing the expected gating pattern
+    (e.g. WRONG_PASSPHRASE), and wait_for_pattern_with_false_mutex_retry treats
+    a completed sync as final. This helper re-triggers after each timeout so
+    the NEXT sync observes the freshly-refreshed listing — the same convergence
+    philosophy as sync_until, keyed on a logcat pattern instead of a check().
+    """
+    for attempt in range(1, attempts + 1):
+        emu.trigger_sync()
+        try:
+            return watcher.wait_for_pattern(pattern, timeout=timeout)
+        except TimeoutError as exc:
+            if attempt >= attempts:
+                raise TimeoutError(
+                    f"Pattern {pattern.pattern} not seen after {attempts} "
+                    f"syncs: {exc}"
+                ) from exc
+            logger.warning(
+                "Pattern %s not seen (attempt %d/%d); settling %.0fs and re-syncing",
+                pattern.pattern, attempt, attempts, settle,
             )
             time.sleep(settle)
     raise TimeoutError("unreachable")

@@ -172,12 +172,6 @@ def _container_mount_ok() -> bool:
         (result.stderr or result.stdout or "").strip(),
     )
     _run(["docker", "restart", NEXTCLOUD_CONTAINER], check=False)
-    time.sleep(10)
-    result = _run(
-        ["docker", "exec", NEXTCLOUD_CONTAINER, "ls", "/mnt/gdrive/"],
-        check=False,
-    )
-    return result.returncode == 0
 
 
 def _verify_rclone_io() -> bool:
@@ -200,6 +194,7 @@ def _verify_rclone_io() -> bool:
 
 
 _MOUNT_LOCK = Path(__file__).parent.parent.parent / "tmp" / ".rclone_mount.lock"
+_STACK_LOCK = Path(__file__).parent.parent.parent / "tmp" / ".nextcloud_stack.lock"
 
 
 def _ensure_rclone_mount() -> None:
@@ -233,6 +228,14 @@ def _ensure_rclone_mount_locked() -> None:
         RCLONE_MOUNT_POINT.mkdir(parents=True, exist_ok=True)
         VFS_CACHE_DIR = RCLONE_MOUNT_POINT.parent / "rclone-vfs-cache"
         VFS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        # rclone mount fails if the remote root does not exist (e.g. after a
+        # sync-clean purge). Create it idempotently first — mkdir is a no-op
+        # when the path is already there. Safe: no mount is running at this
+        # point, so no dir-cache can desync (see purge_drive's warning).
+        _run(
+            ["rclone", "mkdir", "--recursive", f"{RCLONE_REMOTE}:{RCLONE_REMOTE_PATH}"],
+            check=False,
+        )
         result = _run(
             [
                 "rclone", "mount",
@@ -367,11 +370,23 @@ def purge_drive(timeout: int = 120) -> None:
 
     _delete_children()
     deadline = time.time() + timeout
-    while _drive_listing_strict() and time.time() < deadline:
-        logger.warning("Drive not empty after delete, retrying")
-        _delete_children()
-        time.sleep(5)
-    rows = _drive_listing_strict()
+    try:
+        while _drive_listing_strict() and time.time() < deadline:
+            logger.warning("Drive not empty after delete, retrying")
+            _delete_children()
+            time.sleep(5)
+    except RuntimeError as e:
+        if "directory not found" in str(e):
+            logger.info("Drive worker folder does not exist yet, nothing to purge")
+        else:
+            raise
+    try:
+        rows = _drive_listing_strict()
+    except RuntimeError as e:
+        if "directory not found" in str(e):
+            rows = []
+        else:
+            raise
     if rows:
         names = [r.get("Path", r.get("Name", "?")) for r in rows[:10]]
         raise TimeoutError(f"Drive {DRIVE_SUBDIR or 'PicPocketTest'} not empty after purge: {names}")
@@ -528,11 +543,15 @@ def wait_drive_finalized(path: str, min_size: int = 0, timeout: float = 180.0) -
     last: list[dict] = []
     while True:
         rows = drive_state()
+        # Directories (lsjson IsDir rows) have no Size/Hashes and must not be
+        # judged as files — the mutex's .sync-lock directory may legitimately
+        # exist on Drive during or after a sync.
+        files = [r for r in rows if not r.get("IsDir")]
         if path in ("", "/"):
-            last = rows
+            last = files
         else:
             prefix = path.rstrip("/") + "/"
-            last = [r for r in rows if r.get("Path") == path or r.get("Path", "").startswith(prefix)]
+            last = [r for r in files if r.get("Path") == path or r.get("Path", "").startswith(prefix)]
         if last and all(
             r.get("MimeType") != "application/x-partial-download"
             and r.get("Size", 0) >= min_size
@@ -599,9 +618,66 @@ def _is_already_setup() -> bool:
     return _user_exists("testuser")
 
 
+def _install_fresh() -> None:
+    """Install a fresh Nextcloud instance via the web installer.
+
+    `occ maintenance:install` is NOT available on an uninstalled instance
+    (occ only loads a limited command set), and the official image's
+    entrypoint auto-install can silently no-op ("Cannot write into config
+    directory!", exit code 0), leaving the instance uninstalled forever. The
+    canonical path is the web installer: the image ships config/autoconfig.php
+    which reads the MYSQL_* and NEXTCLOUD_ADMIN_* env vars and completes the
+    install on the first page request. Drive it with curl, then the caller's
+    health wait confirms `occ status` reports installed.
+    """
+    for attempt in range(20):
+        try:
+            result = _run(
+                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+                 "http://localhost:8080/"],
+                check=False,
+            )
+            code = result.stdout.strip()
+            if code and code != "000":
+                logger.info("Fresh Nextcloud web install triggered (HTTP %s)", code)
+                return
+        except Exception:
+            pass
+        time.sleep(3)
+    raise RuntimeError("Fresh Nextcloud web install did not respond in time")
+
+
+def _start_stack(fresh: bool = False) -> None:
+    """docker compose up + (fresh install) + health-wait, serialized across
+    parallel workers.
+
+    `docker compose up -d` is NOT concurrency-safe: two workers cold-starting
+    the same project together each race the container creates and one exits
+    non-zero. Mirror the rclone mount lock: hold a file lock across up +
+    install + health wait so the loser's up -d runs after the winner's
+    containers already exist and becomes a no-op.
+    """
+    _STACK_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with open(_STACK_LOCK, "w") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            _run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"])
+            if fresh:
+                _install_fresh()
+            _wait_for_healthy()
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+
+
 def start() -> None:
     _ensure_docker_image()
     _ensure_rclone_mount()
+    # Create the worker-scoped Drive folder so the SAF picker can
+    # select it from the start and the sync-lock.json has a stable
+    # Drive ID across the session (the local FUSE mkdir alone does
+    # not persist on Drive).
+    if DRIVE_SUBDIR:
+        _run(["rclone", "mkdir", "--recursive", _worker_remote_path()], check=False)
 
     if not NCDATA_MOUNT_POINT.exists() or not (NCDATA_MOUNT_POINT / "config" / "config.php").exists():
         _clean_nc_data()
@@ -610,8 +686,7 @@ def start() -> None:
         fresh = False
 
     logger.info("Starting Nextcloud stack...")
-    _run(["docker", "compose", "-f", str(COMPOSE_FILE), "up", "-d"])
-    _wait_for_healthy()
+    _start_stack(fresh)
 
     if not _container_mount_ok():
         raise RuntimeError("Nextcloud container cannot access /mnt/gdrive after restart")
@@ -623,6 +698,17 @@ def start() -> None:
     # Disable password_policy so testpass123 is accepted (runs every time,
     # even on reuse, in case a partial setup left testuser in a bad state)
     _occ(["app:disable", "password_policy"], check=False)
+
+    # Disable transactional file locking for the test stack only (laptop
+    # Nextcloud at /tmp/nc_data, not phone prod Drive). The test bridge
+    # App → Nextcloud client DocumentsProvider → Nextcloud local@ /mnt/gdrive
+    # → rclone → Drive does create+PUT 0-byte then PUT data to the same path
+    # ~1s apart; with DBLockingProvider 3600s that second PUT gets 423 LOCKED
+    # and leaves 0-byte ghosts (test_large). Prod App → Drive has no DB lock,
+    # so disabling here makes CI prod-like. Also disable the DAV manual-lock
+    # app (files_lock) which is not needed for PicPocket's sync-lock.json.
+    _occ(["config:system:set", "filelocking.enabled", "--value", "false", "--type", "boolean"], check=False)
+    _occ(["app:disable", "files_lock"], check=False)
 
     if _is_already_setup() and not fresh:
         logger.info("Nextcloud already configured, reusing existing data")

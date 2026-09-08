@@ -1,3 +1,4 @@
+import json
 import time
 
 import pytest
@@ -26,6 +27,38 @@ class TestHappyPath:
         assert emu_a.assert_doc_exists("test-3page"), "Doc not visible"
 
         assert_drive_verified(oracle, drive_finality=True)
+
+        # The shared device registry on the Drive must be a valid, non-empty
+        # JSON registry (not clobbered, not empty) after every sync.
+        reg = json.loads(oracle.get_file_content("/PicPocketTest/devices.json"))
+        assert reg.get("devices"), "devices.json has no device entries"
+        assert "encrypted" in reg, "devices.json missing encrypted flag"
+
+    def test_batch_imports_multiple_docs_single_sync(
+        self, emu_a, watcher_a, oracle
+    ):
+        generate_and_push(emu_a.adb, "test-batch-1", pages=1)
+        generate_and_push(emu_a.adb, "test-batch-2", pages=2)
+        generate_and_push(emu_a.adb, "test-batch-3", pages=3)
+        emu_a.open_app()
+        emu_a.import_pdf("test-batch-1.pdf")
+        time.sleep(1)
+        emu_a.import_pdf("test-batch-2.pdf")
+        time.sleep(1)
+        emu_a.import_pdf("test-batch-3.pdf")
+        time.sleep(3)
+
+        sync_with_false_mutex_retry(emu_a, watcher_a)
+
+        lengths = assert_drive_verified(oracle, drive_finality=True)
+        assert len(lengths) >= 3, (
+            f"Expected >=3 doc folders on Drive after batch sync, got {len(lengths)}"
+        )
+        emu_a._go_home(timeout=10.0)
+        for name in ("test-batch-1", "test-batch-2", "test-batch-3"):
+            assert emu_a.assert_doc_exists(name), (
+                f"{name} not visible after batch sync"
+            )
 
     def test_b_downloads_from_other_device(
         self, emu_a, emu_b, watcher_a, watcher_b, oracle, two_devices, reset_state_b

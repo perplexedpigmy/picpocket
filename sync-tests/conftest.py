@@ -19,16 +19,61 @@ logger = logging.getLogger(__name__)
 _project_root = Path(__file__).resolve().parent.parent
 APK_PATH = str(_project_root / "app/build/outputs/apk/debug/app-debug.apk")
 
+_SERIALS = ("emulator-5554", "emulator-5556")
+
+
+def _dump_failure_diagnostics() -> None:
+    """Dump sync-relevant logcat + Nextcloud container logs on test failure.
+
+    The sync failures are bridge-staleness races whose exact cause is only
+    visible in the device's own SyncManager/DownloadEngine logcat and in the
+    server's request logs (e.g. a WebDAV GET that 404s). The teardown clears
+    logcat and the session teardown stops the container, so capture both at
+    the moment the test fails.
+    """
+    for serial in _SERIALS:
+        try:
+            out = subprocess.run(
+                ["adb", "-s", serial, "logcat", "-d"],
+                capture_output=True, text=True, timeout=30,
+            ).stdout or ""
+        except Exception as e:  # noqa: BLE001 - diagnostic must never fail the run
+            logger.warning("logcat dump %s failed: %s", serial, e)
+            continue
+        relevant = [
+            l for l in out.splitlines()
+            if any(t in l for t in (
+                "SyncManager", "DownloadEngine", "DriveFileManager", "UploadEngine",
+                "DeviceRegistry", "SAFProbe", "DocumentsStorageProvider",
+                "ReadFolderRemoteOperation", "OwnCloudClient", "SynchronizeFileOperation",
+            ))
+        ]
+        logger.info("===== %s logcat (%d relevant lines) =====", serial, len(relevant))
+        for line in relevant[-120:]:
+            logger.info("  %s", line)
+    try:
+        out = subprocess.run(
+            ["docker", "logs", "--tail", "120", "sync-tests-nextcloud-1"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout or ""
+    except Exception as e:  # noqa: BLE001
+        logger.warning("nextcloud container log dump failed: %s", e)
+        return
+    logger.info("===== nextcloud container logs (tail 120) =====")
+    for line in out.splitlines()[-120:]:
+        logger.info("  %s", line)
+
 
 @pytest.fixture(scope="session", autouse=True)
 def nextcloud_infra():
     """Session-scoped Nextcloud infrastructure (start/teardown).
 
-    start() is idempotent (docker compose up + an already-set-up fast path), so
-    parallel workers can each call it safely. Teardown skips docker compose down
-    for a parallel worker (NEXTCLOUD_SUBDIR set): the stack is shared, and a
-    worker finishing first must not tear it down under a sibling; the serial
-    full-gate session owns the stop.
+    start() is idempotent on a warm stack, and the bring-up is serialized with
+    a file lock (_start_stack in infra/nextcloud.py): docker compose up -d races
+    between parallel workers on a cold start and one exits non-zero. Teardown
+    skips docker compose down for a parallel worker (NEXTCLOUD_SUBDIR set): the
+    stack is shared, and a worker finishing first must not tear it down under a
+    sibling; the serial full-gate session owns the stop.
     """
     nextcloud.start()
     yield
@@ -92,9 +137,22 @@ def emu_b(serial_b, request):
 
 
 @pytest.fixture
-def two_devices(serial_b):
-    """Marker fixture: ensures device B is booted for tests that need it."""
-    return serial_b
+def two_devices(request, serial_b):
+    """Marker fixture: ensures device B is booted for tests that need it.
+
+    Forces the shared PicPocketTest root for the duration of the test so
+    w1/w2 isolation cannot split the lock. Single-device parallel (w1/w2)
+    stays isolated; two-device always uses the shared repo.
+    """
+    old = os.environ.pop("NEXTCLOUD_SUBDIR", None)
+    old_drive = os.environ.pop("DRIVE_SUBDIR", None)
+    try:
+        yield serial_b
+    finally:
+        if old is not None:
+            os.environ["NEXTCLOUD_SUBDIR"] = old
+        if old_drive is not None:
+            os.environ["DRIVE_SUBDIR"] = old_drive
 
 
 @pytest.fixture
@@ -271,43 +329,126 @@ def fresh_sync_config(serial_a):
 
 
 @pytest.fixture
-def reset_state(serial_a, oracle):
-    """Reset device A and the shared Drive folder before a test.
+def reset_state(request, serial_a, oracle):
+    """Reset device A and the shared Drive folder before and after a test.
+
+    Setup wipes the worker-scoped Drive folder (w1/w2 for single-device
+    parallel, shared PicPocketTest for >=2 devices) so each test starts with
+    nothing on the remote. Cleanup wipes again after the test so the remote
+    is left empty even if the next test never runs.
 
     Deliberately does NOT touch device B: single-device tests must not drag
     a second emulator into the session. Two-device tests additionally request
     reset_state_b to reset B.
+
+    For >=2 devices the SAF folder selection (drive_index.json) is wiped so
+    both devices re-pick the shared PicPocketTest root. Single-device keeps
+    the selection to skip the slow picker.
     """
-    nextcloud.reset_bruteforce()
-    adb = AdbDevice(serial_a)
-    _ensure_apk(adb)
-    _enable_tracing(adb)
-    _ensure_local_folder(adb)
-    _clear_sync_state(adb)
-    adb.shell("am force-stop com.google.android.documentsui || true")
-    _verify_nextcloud_account(adb)
-    nextcloud._occ(["files:scan", "--all"], check=False)
-    try:
-        oracle.clear_all()
-        logger.info("Drive test folder cleared")
-    except Exception as e:
-        logger.warning("Failed to clear Drive: %s", e)
-    nextcloud.purge_drive()
-    time.sleep(2)
-    logger.info("Test state reset complete")
+    is_two = "two_devices" in request.fixturenames or "reset_state_b" in request.fixturenames
+
+    def _setup():
+        nextcloud.reset_bruteforce()
+        adb = AdbDevice(serial_a)
+        _ensure_apk(adb)
+        _enable_tracing(adb)
+        adb.logcat_clear()
+        _ensure_local_folder(adb)
+        _clear_sync_state(adb, keep_config=not is_two)
+        adb.shell("am force-stop com.google.android.documentsui || true")
+        _verify_nextcloud_account(adb)
+        nextcloud._occ(["files:scan", "--all"], check=False)
+        try:
+            oracle.clear_all()
+            logger.info("Drive test folder cleared")
+        except Exception as e:
+            logger.warning("Failed to clear Drive: %s", e)
+        nextcloud.purge_drive()
+        time.sleep(2)
+        logger.info("Test state reset complete (is_two=%s)", is_two)
+
+    def _teardown():
+        # Retry Drive wipe — a prior test that failed with LOCKED (423) can
+        # leave a file locked; clear_all retries 3× but may still leave it.
+        # Poll until the worker-scoped folder is empty and devices.json is
+        # readable, so the next test does not see "devices.json … could not
+        # be read".
+        for attempt in range(3):
+            try:
+                oracle.clear_all()
+                logger.info("Drive test folder cleaned up (attempt %d)", attempt + 1)
+            except Exception as e:
+                logger.warning("Failed to clean Drive after test (attempt %d): %s", attempt + 1, e)
+            try:
+                nextcloud.purge_drive()
+            except Exception as e:
+                logger.warning("purge_drive after test failed (attempt %d): %s", attempt + 1, e)
+            # Verify the folder is empty and devices.json is not half-written
+            try:
+                remaining = oracle._list_entries("/PicPocketTest")
+                if not remaining:
+                    # Also verify devices.json is gone (404) or readable JSON —
+                    # the App's next syncRegistryFromDrive does openInputStream
+                    # and fails with "exists but could not be read" if the
+                    # file is listed but 0 bytes.
+                    try:
+                        oracle.get_file_content("/PicPocketTest/devices.json")
+                        logger.warning("devices.json still present after cleanup, retrying")
+                    except Exception as ex:
+                        # 404 is expected for empty folder; anything else retry
+                        if "404" in str(ex):
+                            break
+                        logger.warning("devices.json not readable after cleanup: %s", ex)
+                    else:
+                        # Got content but folder should be empty — retry
+                        time.sleep(2)
+                        continue
+                    break
+                logger.warning("Drive not empty after cleanup %s, retrying", remaining)
+            except Exception as e:
+                logger.warning("Failed to list Drive after cleanup (attempt %d): %s", attempt + 1, e)
+            time.sleep(10)
+        # Always wipe local documents and retry state; keep folder selection
+        # only for single-device (so next single-device test can skip picker).
+        try:
+            _clear_sync_state(AdbDevice(serial_a), keep_config=not is_two)
+        except Exception as e:
+            logger.warning("Failed to clear sync state after test: %s", e)
+
+    _setup()
+    yield
+    _teardown()
 
 
 @pytest.fixture
-def reset_state_b(serial_b):
+def reset_state_b(request, serial_b):
     """Reset device B only (used by two-device tests; boots B on demand)."""
-    adb = AdbDevice(serial_b)
-    _ensure_apk(adb)
-    _enable_tracing(adb)
-    _ensure_local_folder(adb)
-    _clear_sync_state(adb)
-    adb.shell("am force-stop com.google.android.documentsui || true")
-    _verify_nextcloud_account(adb)
-    logger.info("Device B state reset complete")
+    is_two = True  # reset_state_b is only requested by two-device tests
+
+    def _setup():
+        adb = AdbDevice(serial_b)
+        _ensure_apk(adb)
+        _enable_tracing(adb)
+        adb.logcat_clear()
+        _ensure_local_folder(adb)
+        _clear_sync_state(adb, keep_config=False)
+        adb.shell("am force-stop com.google.android.documentsui || true")
+        _verify_nextcloud_account(adb)
+        logger.info("Device B state reset complete")
+
+    def _teardown():
+        try:
+            _clear_sync_state(AdbDevice(serial_b), keep_config=False)
+        except Exception as e:
+            logger.warning("Failed to clear sync state B after test: %s", e)
+        try:
+            AdbDevice(serial_b).shell("rm -rf /sdcard/PicPocketTest && mkdir -p /sdcard/PicPocketTest")
+        except Exception:
+            pass
+
+    _setup()
+    yield
+    _teardown()
 
 
 def _clear_sync_state(device: AdbDevice, keep_config: bool = True):
@@ -392,3 +533,5 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     setattr(item, "rep_" + rep.when, rep)
+    if rep.when == "call" and rep.failed:
+        _dump_failure_diagnostics()

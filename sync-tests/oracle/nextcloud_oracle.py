@@ -312,6 +312,8 @@ class NextcloudOracle:
 
         Returns (metadata_dict, version, passphrase), or None if the doc has
         no versioned metadata file on the server.
+        If metadata is encrypted (starts with PKE1 magic header), returns
+        (None, version, passphrase) since the oracle cannot decrypt it.
         """
         newest = self._newest_metadata(doc_id)
         if newest is None:
@@ -321,7 +323,10 @@ class NextcloudOracle:
         resp = requests.get(url, auth=self.auth, timeout=10)
         if resp.status_code != 200:
             return None
-        return json.loads(resp.content), version, passphrase
+        content = resp.content
+        if content.startswith(b"PKE1"):
+            return None, version, passphrase
+        return json.loads(content), version, passphrase
 
     def _metadata_entries(self, doc_id: str) -> list[tuple[str, int, int]]:
         """Return (name, version, passphrase) for each metadata.*.json file."""

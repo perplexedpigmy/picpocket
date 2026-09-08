@@ -67,6 +67,7 @@ class SyncSmokeTest {
         coEvery { syncMutex.initialize() } returns Unit
         coEvery { syncMutex.acquire() } returns true
         coEvery { syncMutex.release() } returns Unit
+        coEvery { syncMutex.heartbeat() } returns Unit
 
         syncManager = SyncManager(
             driveAuthManager,

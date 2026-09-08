@@ -14,6 +14,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
@@ -75,6 +76,7 @@ class SyncManagerTest {
         coEvery { syncMutex.initialize() } returns Unit
         coEvery { syncMutex.acquire() } returns true
         coEvery { syncMutex.release() } returns Unit
+        coEvery { syncMutex.heartbeat() } returns Unit
         coEvery { documentStore.metadataVersion(any()) } returns 0
         coEvery { documentStore.metadataPassphrase(any()) } returns 0
 
@@ -316,6 +318,31 @@ class SyncManagerTest {
 
         coVerify(inverse = true) { uploadEngine.uploadNewDocument("doc-2") }
         assertTrue(syncManager.syncState.value is SyncState.Error)
+    }
+
+    @Test
+    fun `sync rerun after an interrupted upload completes the doc`() = runTest {
+        // First sync: the upload is killed mid-transfer (the app is force-
+        // stopped, the radio drops), leaving the sync in an error state with
+        // the doc still local-only. The next sync must retry the same doc and
+        // finish it — the interrupted transfer must not wedge the sync.
+        val d = doc("doc-1")
+        coEvery { documentStore.listDocuments() } returns Result.success(listOf(d))
+        coEvery { downloadEngine.listRemoteDocuments(any()) } returns emptyList()
+        var attempts = 0
+        coEvery { uploadEngine.uploadNewDocument("doc-1") } answers {
+            attempts++
+            if (attempts == 1) throw IOException("upload interrupted mid-transfer")
+            true
+        }
+
+        syncManager.performSync()
+        assertTrue(syncManager.syncState.value is SyncState.Error)
+
+        syncManager.performSync()
+
+        assertEquals(SyncState.Idle, syncManager.syncState.value)
+        coVerify(exactly = 2) { uploadEngine.uploadNewDocument("doc-1") }
     }
 
     @Test
