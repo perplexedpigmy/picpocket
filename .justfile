@@ -33,6 +33,14 @@ unit-test:
     ./gradlew testDebugUnitTest
     @echo "Tests completed!"
 
+# Run instrumented Android tests on one emulator (testPixel7, emulator-5554).
+# Always reboots from the sync_test_ready snapshot for a known state, then
+# runs connectedDebugAndroidTest only on that device. Extra args (e.g.
+# -Pandroid.testInstrumentationRunnerArguments.class=...) are passed to gradle.
+android-test *args:
+    EMULATOR_SERIAL=emulator-5554 python sync-tests/scripts/ensure_emulator.py
+    ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest {{args}}
+
 # Build and install the debug APK on the connected device
 install: build
     adb -d install -r {{APK_PATH}}

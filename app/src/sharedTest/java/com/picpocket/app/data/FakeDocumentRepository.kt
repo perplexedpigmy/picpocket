@@ -37,6 +37,12 @@ class FakeDocumentRepository : DocumentRepository {
         return if (doc != null) Result.success(doc) else Result.failure(Exception("Document not found"))
     }
 
+    fun seedDocument(id: DocumentId, name: String, ocrComplete: Boolean = false) {
+        val now = System.currentTimeMillis()
+        val doc = Document(id, name, now, now, qualityTier = 0, pageSize = null, ocrComplete = ocrComplete)
+        documents.value = documents.value + doc
+    }
+
     override suspend fun getPages(documentId: DocumentId): Result<List<Page>> {
         return Result.success(pageLists[documentId]?.value ?: emptyList())
     }

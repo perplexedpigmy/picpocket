@@ -61,6 +61,15 @@ android {
             excludes += "/META-INF/DEPENDENCIES"
         }
     }
+
+    sourceSets {
+        getByName("test") {
+            java.srcDir("src/sharedTest/java")
+        }
+        getByName("androidTest") {
+            java.srcDir("src/sharedTest/java")
+        }
+    }
 }
 
 dependencies {
