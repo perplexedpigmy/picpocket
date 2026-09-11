@@ -18,18 +18,18 @@ open class ScannerManager @Inject constructor() {
 
     private var scanner: GmsDocumentScanner? = null
 
-    open fun createOptions(): GmsDocumentScannerOptions {
+    open fun createOptions(pageLimit: Int = 50): GmsDocumentScannerOptions {
         return GmsDocumentScannerOptions.Builder()
             .setGalleryImportAllowed(true)
-            .setPageLimit(50)
+            .setPageLimit(pageLimit)
             .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .build()
     }
 
-    open suspend fun getStartScanIntentSender(activity: Activity): IntentSender {
+    open suspend fun getStartScanIntentSender(activity: Activity, pageLimit: Int = 50): IntentSender {
         Log.d("ScannerManager", "getStartScanIntentSender called")
-        val opts = createOptions()
+        val opts = createOptions(pageLimit)
         Log.d("ScannerManager", "options created")
         scanner = GmsDocumentScanning.getClient(opts)
         Log.d("ScannerManager", "scanner client created: $scanner")
@@ -63,7 +63,11 @@ open class ScannerManager @Inject constructor() {
 
             try {
                 val imageUris = pages.map { it.imageUri }
-                continuation.resume(ScannerResult.MultiplePagesCaptured(imageUris))
+                if (imageUris.size == 1) {
+                    continuation.resume(ScannerResult.PageCaptured(imageUris.first()))
+                } else {
+                    continuation.resume(ScannerResult.MultiplePagesCaptured(imageUris))
+                }
             } catch (e: Exception) {
                 continuation.resume(ScannerResult.Error(e))
             }

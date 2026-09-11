@@ -174,12 +174,14 @@ class FakeDocumentRepository : DocumentRepository {
     }
 
     var failRescanPage = false
+    var rescanCallCount = 0
 
     override suspend fun rescanPage(documentId: DocumentId, pageNumber: Int, imageUri: String): Result<Unit> {
         if (failRescanPage) return Result.failure(Exception("Rescan failed"))
+        rescanCallCount++
         val state = pageLists[documentId] ?: return Result.failure(Exception("Document not found"))
         state.value = state.value.map {
-            if (it.pageNumber == pageNumber) it.copy(ocrText = null) else it
+            if (it.pageNumber == pageNumber) it.copy(imageUri = imageUri, ocrText = null) else it
         }
         return Result.success(Unit)
     }

@@ -51,6 +51,7 @@ class DocumentRepositoryImpl @Inject constructor(
 
     init {
         scope.launch { refreshDocuments() }
+        scope.launch { ocrManager.metadataChanged.collect { refreshDocuments() } }
     }
 
     private suspend fun refreshDocuments() {
@@ -65,11 +66,19 @@ class DocumentRepositoryImpl @Inject constructor(
     }
 
     override fun observeDocument(documentId: DocumentId): Flow<Document?> {
-        return _documents.asStateFlow().map { list -> list.find { it.id == documentId } }
+        return merge(
+            _documents.asStateFlow().map { Unit },
+            ocrManager.metadataChanged,
+        ).map {
+            store.readMetadata(documentId).getOrNull()?.toDomain()
+        }
     }
 
     override fun observePages(documentId: DocumentId): Flow<List<Page>> {
-        return _documents.asStateFlow().map { _ ->
+        return merge(
+            _documents.asStateFlow().map { Unit },
+            ocrManager.metadataChanged,
+        ).map {
             val stored = store.readMetadata(documentId).getOrNull() ?: return@map emptyList()
             stored.pages.mapIndexed { _, sp ->
                 Page(
