@@ -1,10 +1,11 @@
 package com.picpocket.app.drive.sync
 
-import android.content.Context
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.data.store.MetadataNaming
 import com.picpocket.app.data.store.StoredDocument
+import com.picpocket.app.debug.Category
+import com.picpocket.app.debug.Tracing
 
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -16,7 +17,6 @@ class UploadEngine @Inject constructor(
     private val driveFileManager: DriveFileManager,
     private val documentStore: DocumentStore,
     private val localDriveIndex: LocalDriveIndex,
-    @ApplicationContext private val context: Context,
 ) {
     private val json = Json { prettyPrint = true }
 
@@ -25,116 +25,117 @@ class UploadEngine @Inject constructor(
         return uri.ifBlank { null }
     }
 
+    private suspend fun cleanupOldMetadata(tree: String, docId: String, newName: String) {
+        for (name in driveFileManager.listFileNames(tree, docId)) {
+            if (name != newName && MetadataNaming.isMetadata(name)) {
+                driveFileManager.deleteFileByName(tree, docId, name)
+            }
+        }
+    }
+
     suspend fun ensureFolder(docId: String): Boolean {
         val tree = treeUri() ?: return false
         return driveFileManager.createDocFolder(tree, docId)
     }
 
-    suspend fun uploadSinglePage(docId: String, pageFilename: String, data: ByteArray): Boolean {
+    suspend fun uploadNewDocument(docId: String): Boolean {
         val tree = treeUri() ?: return false
-        return driveFileManager.writeFile(tree, docId, pageFilename, data)
-    }
-
-    suspend fun uploadMetadataBytes(docId: String, data: ByteArray): Boolean {
-        val tree = treeUri() ?: return false
-        return driveFileManager.writeFile(tree, docId, "metadata.json", data)
-    }
-
-    suspend fun uploadDocument(doc: StoredDocument): Boolean {
-        val docId = doc.id
+        val doc = documentStore.readMetadata(docId).getOrNull() ?: return false
         if (!ensureFolder(docId)) return false
-        val info = localDriveIndex.getDocumentInfo(docId)
+        val version = documentStore.metadataVersion(docId)
+        val passphrase = localDriveIndex.passphraseCount
 
         for (page in doc.pages) {
             val pageFile = documentStore.pageFile(docId, page.filename)
             if (pageFile.exists()) {
-                uploadSinglePage(docId, page.filename, pageFile.readBytes())
-            }
-        }
-
-        val syncDoc = doc.copy(
-            syncVersion = doc.syncVersion + 1,
-            syncTimestamp = System.currentTimeMillis(),
-        )
-        val metadataBytes = json.encodeToString(syncDoc).toByteArray(Charsets.UTF_8)
-        uploadMetadataBytes(docId, metadataBytes)
-
-        info.syncVersion = syncDoc.syncVersion
-        info.syncTimestamp = syncDoc.syncTimestamp
-        localDriveIndex.setDocumentInfo(docId, info)
-        return true
-    }
-
-    suspend fun uploadPage(docId: String, pageNumber: Int): Result<Unit> {
-        if (!ensureFolder(docId)) return Result.failure(Exception("Failed to create folder"))
-        val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
-        val page = doc.pages.find { it.pageNumber == pageNumber }
-            ?: return Result.failure(Exception("Page $pageNumber not found"))
-        val pageFile = documentStore.pageFile(docId, page.filename)
-        if (pageFile.exists() != true) return Result.failure(Exception("Page file not found"))
-        uploadSinglePage(docId, page.filename, pageFile.readBytes())
-        return Result.success(Unit)
-    }
-
-    suspend fun deletePage(docId: String, pageNumber: Int): Result<Unit> {
-        val tree = treeUri() ?: return Result.success(Unit)
-        val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
-        val page = doc.pages.find { it.pageNumber == pageNumber }
-        val filename = page?.filename ?: documentStore.filenameForPage(pageNumber)
-        driveFileManager.deleteFileByName(tree, docId, filename)
-        return Result.success(Unit)
-    }
-
-    suspend fun replacePageImage(docId: String, pageNumber: Int): Result<Unit> {
-        if (!ensureFolder(docId)) return Result.failure(Exception("Failed to create folder"))
-        val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
-        val page = doc.pages.find { it.pageNumber == pageNumber }
-            ?: return Result.failure(Exception("Page $pageNumber not found"))
-        val pageFile = documentStore.pageFile(docId, page.filename)
-        if (pageFile.exists() != true) return Result.failure(Exception("Page file not found"))
-        uploadSinglePage(docId, page.filename, pageFile.readBytes())
-        return Result.success(Unit)
-    }
-
-    suspend fun updateMetadata(docId: String): Result<Unit> {
-        val tree = treeUri() ?: return Result.failure(Exception("No folder selected"))
-        val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
-        val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
-        driveFileManager.writeFile(tree, docId, "metadata.json", metadataBytes)
-        return Result.success(Unit)
-    }
-
-    suspend fun replacePages(docId: String, keptFilenames: List<String>): Result<List<String>> {
-        val tree = treeUri() ?: return Result.failure(Exception("No folder selected"))
-        val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
-        val removed = doc.pages.filter { it.filename !in keptFilenames }
-
-        for (page in removed) {
-            driveFileManager.deleteFileByName(tree, docId, page.filename)
-        }
-        return Result.success(removed.map { it.filename })
-    }
-
-    suspend fun reEncryptDocument(docId: String): Result<Unit> {
-        if (!ensureFolder(docId)) return Result.failure(Exception("Failed to create folder"))
-        val doc = documentStore.readMetadata(docId).getOrElse { return Result.failure(it) }
-
-        for (page in doc.pages) {
-            val pageFile = documentStore.pageFile(docId, page.filename)
-            if (pageFile.exists() == true) {
-                if (!uploadSinglePage(docId, page.filename, pageFile.readBytes())) {
-                    return Result.failure(Exception("Failed to upload page ${page.filename}"))
+                val outcome = driveFileManager.writeFile(tree, docId, page.filename, pageFile.readBytes())
+                if (outcome !is WriteOutcome.Verified) {
+                    Tracing.w(Category.DRIVE_FILES, TAG, "uploadNewDocument: page ${page.filename} failed: ${(outcome as? WriteOutcome.Failed)?.reason}")
+                    return false
                 }
             }
         }
 
         val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
-        if (!uploadMetadataBytes(docId, metadataBytes)) {
-            return Result.failure(Exception("Failed to upload metadata for $docId"))
+        val metaName = MetadataNaming.name(version, passphrase)
+        val metaOutcome = driveFileManager.writeFile(tree, docId, metaName, metadataBytes)
+        if (metaOutcome !is WriteOutcome.Verified) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "uploadNewDocument: metadata failed for $docId: ${(metaOutcome as? WriteOutcome.Failed)?.reason}")
+            return false
         }
 
-        documentStore.writeMetadata(docId, doc)
-        return Result.success(Unit)
+        cleanupOldMetadata(tree, docId, metaName)
+        documentStore.writeMetadataAt(docId, doc, version, passphrase)
+        return true
+    }
+
+    suspend fun pushDocument(docId: String, remotePassphrase: Int): Boolean {
+        val tree = treeUri() ?: return false
+        val doc = documentStore.readMetadata(docId).getOrNull() ?: return false
+        if (!ensureFolder(docId)) return false
+        val version = documentStore.metadataVersion(docId)
+
+        val remoteNames = driveFileManager.listFileNames(tree, docId).toSet()
+        val localNames = doc.pages.map { it.filename }.toSet()
+
+        for (filename in localNames - remoteNames) {
+            val pageFile = documentStore.pageFile(docId, filename)
+            if (pageFile.exists()) {
+                val outcome = driveFileManager.writeFile(tree, docId, filename, pageFile.readBytes())
+                if (outcome !is WriteOutcome.Verified) {
+                    Tracing.w(Category.DRIVE_FILES, TAG, "pushDocument: page $filename failed: ${(outcome as? WriteOutcome.Failed)?.reason}")
+                    return false
+                }
+            }
+        }
+
+        for (name in remoteNames - localNames) {
+            if (MetadataNaming.isMetadata(name) || name == ".deleted") continue
+            driveFileManager.deleteFileByName(tree, docId, name)
+        }
+
+        val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
+        val metaName = MetadataNaming.name(version, remotePassphrase)
+        val metaOutcome = driveFileManager.writeFile(tree, docId, metaName, metadataBytes)
+        if (metaOutcome !is WriteOutcome.Verified) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "pushDocument: metadata failed for $docId: ${(metaOutcome as? WriteOutcome.Failed)?.reason}")
+            return false
+        }
+
+        cleanupOldMetadata(tree, docId, metaName)
+        documentStore.writeMetadataAt(docId, doc, version, remotePassphrase)
+        return true
+    }
+
+    suspend fun forceReEncryptDocument(docId: String): Boolean {
+        val tree = treeUri() ?: return false
+        val doc = documentStore.readMetadata(docId).getOrNull() ?: return false
+        if (!ensureFolder(docId)) return false
+        val version = documentStore.metadataVersion(docId)
+        val passphrase = localDriveIndex.passphraseCount
+
+        for (page in doc.pages) {
+            val pageFile = documentStore.pageFile(docId, page.filename)
+            if (pageFile.exists()) {
+                val outcome = driveFileManager.writeFile(tree, docId, page.filename, pageFile.readBytes())
+                if (outcome !is WriteOutcome.Verified) {
+                    Tracing.w(Category.DRIVE_FILES, TAG, "forceReEncryptDocument: page ${page.filename} failed: ${(outcome as? WriteOutcome.Failed)?.reason}")
+                    return false
+                }
+            }
+        }
+
+        val metadataBytes = json.encodeToString(doc).toByteArray(Charsets.UTF_8)
+        val metaName = MetadataNaming.name(version, passphrase)
+        val metaOutcome = driveFileManager.writeFile(tree, docId, metaName, metadataBytes)
+        if (metaOutcome !is WriteOutcome.Verified) {
+            Tracing.w(Category.DRIVE_FILES, TAG, "forceReEncryptDocument: metadata failed for $docId: ${(metaOutcome as? WriteOutcome.Failed)?.reason}")
+            return false
+        }
+
+        cleanupOldMetadata(tree, docId, metaName)
+        documentStore.writeMetadataAt(docId, doc, version, passphrase)
+        return true
     }
 
     suspend fun uploadDeletedTombstone(docId: String, deviceId: String) {
@@ -145,6 +146,10 @@ class UploadEngine @Inject constructor(
         ).toByteArray(Charsets.UTF_8)
 
         driveFileManager.writeFile(tree, docId, ".deleted", tombstoneData)
+    }
+
+    companion object {
+        private const val TAG = "UploadEngine"
     }
 }
 

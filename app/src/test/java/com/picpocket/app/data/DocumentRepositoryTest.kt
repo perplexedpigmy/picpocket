@@ -7,7 +7,6 @@ import java.io.File
 import com.picpocket.app.data.local.PicPocketDatabase
 import com.picpocket.app.data.repository.DocumentRepositoryImpl
 import com.picpocket.app.data.store.DocumentStore
-import com.picpocket.app.drive.sync.SyncJournal
 import com.picpocket.app.domain.ocr.OcrEngine
 import com.picpocket.app.domain.ocr.OcrManager
 import com.picpocket.app.domain.pdfimport.PdfPageImportResult
@@ -36,22 +35,20 @@ private fun tempPageUri(): String {
     return Uri.fromFile(f).toString()
 }
 
-private fun createOcrManager(app: android.app.Application, syncJournal: SyncJournal): OcrManager {
+private fun createOcrManager(app: android.app.Application): OcrManager {
     return OcrManager(
         object : OcrEngine {
             override suspend fun recognize(bitmap: android.graphics.Bitmap): com.picpocket.app.domain.ocr.OcrResult {
                 return com.picpocket.app.domain.ocr.OcrResult("", 0f)
             }
         },
-        DocumentStore(app, syncJournal),
+        DocumentStore(app),
     )
 }
 
 @RunWith(RobolectricTestRunner::class)
 @ExperimentalCoroutinesApi
 class DocumentRepositoryTest {
-
-    private val syncJournal = mockk<SyncJournal>(relaxed = true)
 
     @get:Rule
     val coroutineRule = MainCoroutineRule()
@@ -67,7 +64,7 @@ class DocumentRepositoryTest {
         ).allowMainThreadQueries().build()
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         repository = DocumentRepositoryImpl(
-            store = DocumentStore(app, syncJournal),
+            store = DocumentStore(app),
             tagDao = database.tagDao(),
             tagAutomationDao = database.tagAutomationDao(),
             pdfPageImporter = PdfPageImporter(),
@@ -77,7 +74,7 @@ class DocumentRepositoryTest {
                         return com.picpocket.app.domain.ocr.OcrResult("", 0f)
                     }
                 },
-                DocumentStore(app, syncJournal),
+                DocumentStore(app),
             ),
             app = app,
         )
@@ -319,11 +316,11 @@ class DocumentRepositoryTest {
 
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val repo = DocumentRepositoryImpl(
-            store = DocumentStore(app, syncJournal),
+            store = DocumentStore(app),
             tagDao = database.tagDao(),
             tagAutomationDao = database.tagAutomationDao(),
             pdfPageImporter = mockImporter,
-            ocrManager = createOcrManager(app, syncJournal),
+            ocrManager = createOcrManager(app),
             app = app,
         )
 
@@ -340,11 +337,11 @@ class DocumentRepositoryTest {
 
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val repo = DocumentRepositoryImpl(
-            store = DocumentStore(app, syncJournal),
+            store = DocumentStore(app),
             tagDao = database.tagDao(),
             tagAutomationDao = database.tagAutomationDao(),
             pdfPageImporter = mockImporter,
-            ocrManager = createOcrManager(app, syncJournal),
+            ocrManager = createOcrManager(app),
             app = app,
         )
 
@@ -375,11 +372,11 @@ class DocumentRepositoryTest {
 
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val repo = DocumentRepositoryImpl(
-            store = DocumentStore(app, syncJournal),
+            store = DocumentStore(app),
             tagDao = database.tagDao(),
             tagAutomationDao = database.tagAutomationDao(),
             pdfPageImporter = mockImporter,
-            ocrManager = createOcrManager(app, syncJournal),
+            ocrManager = createOcrManager(app),
             app = app,
         )
 
@@ -428,11 +425,11 @@ class DocumentRepositoryTest {
 
         val app = ApplicationProvider.getApplicationContext<android.app.Application>()
         val repo = DocumentRepositoryImpl(
-            store = DocumentStore(app, syncJournal),
+            store = DocumentStore(app),
             tagDao = database.tagDao(),
             tagAutomationDao = database.tagAutomationDao(),
             pdfPageImporter = mockImporter,
-            ocrManager = createOcrManager(app, syncJournal),
+            ocrManager = createOcrManager(app),
             app = app,
         )
 

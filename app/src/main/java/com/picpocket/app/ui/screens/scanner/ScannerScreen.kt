@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
@@ -100,19 +101,32 @@ fun ScannerScreen(
     ) { isGranted ->
         if (isGranted) {
             viewModel.getScanIntentSender(context)
+        } else {
+            Toast.makeText(context, "Camera permission required to scan", Toast.LENGTH_LONG).show()
+            onNavigateBack()
         }
     }
 
-    LaunchedEffect(state.isAppendMode) {
-        if (state.isAppendMode) {
-            if (ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.CAMERA
-                ) == PackageManager.PERMISSION_GRANTED
-            ) {
-                viewModel.getScanIntentSender(context)
-            } else {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
+    val launchScan: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(
+                context, Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.getScanIntentSender(context)
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (state.capturedPages.isEmpty()) {
+            launchScan()
+        }
+    }
+
+    LaunchedEffect(state.scannerCancelledTick) {
+        if (state.scannerCancelledTick > 0 && state.capturedPages.isEmpty()) {
+            onNavigateBack()
         }
     }
 
@@ -172,16 +186,7 @@ fun ScannerScreen(
         floatingActionButton = {
             if (!state.isSaving) {
                 FloatingActionButton(
-                    onClick = {
-                        if (ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.CAMERA
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            viewModel.getScanIntentSender(context)
-                        } else {
-                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                        }
-                    },
+                    onClick = { launchScan() },
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Scan")
                 }
@@ -218,16 +223,7 @@ fun ScannerScreen(
                     Spacer(Modifier.height(8.dp))
                 }
 
-                if (state.capturedPages.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            if (state.isAppendMode) "Tap + to add a new page"
-                            else "Tap + to scan your first page",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        )
-                    }
-                } else {
+                if (state.capturedPages.isNotEmpty()) {
                     Text(
                         if (state.isAppendMode) "${state.appendPageCount} page(s) added in this session"
                         else "${state.capturedPages.size} page(s) captured",

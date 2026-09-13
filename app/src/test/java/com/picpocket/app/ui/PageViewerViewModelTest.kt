@@ -27,7 +27,7 @@ class PageViewerViewModelTest {
     private var documentId: DocumentId = ""
 
     @Before
-    fun setUp() = runTest {
+    fun setUp() = runTest(coroutineRule.dispatcher) {
         repo = FakeDocumentRepository()
         documentId = repo.createDocument("Viewer Test").getOrThrow()
         repo.addPage(documentId, "content://page1.jpg")

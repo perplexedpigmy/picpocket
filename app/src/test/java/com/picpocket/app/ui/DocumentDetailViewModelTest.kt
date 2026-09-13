@@ -4,11 +4,12 @@ import android.app.Application
 import android.content.Context
 import com.picpocket.app.data.FakeDocumentRepository
 import com.picpocket.app.data.store.DocumentStore
-import com.picpocket.app.drive.sync.SyncJournal
 import io.mockk.mockk
 import com.picpocket.app.domain.ocr.FakeOcrEngine
 import com.picpocket.app.domain.ocr.OcrManager
 import com.picpocket.app.domain.export.FakePdfGenerator
+import com.picpocket.app.domain.scanner.ScannerManager
+import com.picpocket.app.domain.scanner.ScannerResult
 import com.picpocket.app.ui.screens.detail.DocumentDetailViewModel
 import com.picpocket.app.util.MainCoroutineRule
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,23 +35,25 @@ class DocumentDetailViewModelTest {
 
     private lateinit var repo: FakeDocumentRepository
     private lateinit var viewModel: DocumentDetailViewModel
-    private val syncJournal = mockk<SyncJournal>(relaxed = true)
     private var documentId: String = ""
+    private lateinit var scannerManager: ScannerManager
 
     @Before
-    fun setUp() = runTest {
+    fun setUp() = runTest(coroutineRule.dispatcher) {
         repo = FakeDocumentRepository()
         documentId = repo.createDocument("My Document").getOrThrow()
         repo.addPage(documentId, "content://page1.jpg")
         repo.addPage(documentId, "content://page2.jpg")
         val app = RuntimeEnvironment.getApplication() as Application
-        val store = DocumentStore(app, syncJournal)
+        val store = DocumentStore(app)
+        scannerManager = mockk(relaxed = true)
         viewModel = DocumentDetailViewModel(
             app,
             repo,
             store,
             FakePdfGenerator(),
             OcrManager(FakeOcrEngine(), store),
+            scannerManager,
         )
     }
 
@@ -272,5 +275,94 @@ class DocumentDetailViewModelTest {
 
         assertFalse(viewModel.uiState.value.showRescanProgress)
         assertNull(viewModel.uiState.value.rescanPageNumber)
+    }
+
+    @Test
+    fun `handleRescanScannerResult with single page rescans the page`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val uri = android.net.Uri.parse("content://scanner/result.jpg")
+        io.mockk.coEvery { scannerManager.handleResult(any()) } returns ScannerResult.PageCaptured(uri)
+
+        viewModel.handleRescanScannerResult(pageNumber = 1, data = null)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.showRescanProgress)
+        assertNull(viewModel.uiState.value.rescanPageNumber)
+        assertEquals(1, repo.rescanCallCount)
+        val page1 = repo.getPages(documentId).getOrThrow().first { it.pageNumber == 1 }
+        assertEquals("content://scanner/result.jpg", page1.imageUri)
+    }
+
+    @Test
+    fun `handleRescanScannerResult with multiple pages shows error and rescans nothing`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val uris = listOf(
+            android.net.Uri.parse("content://scanner/1.jpg"),
+            android.net.Uri.parse("content://scanner/2.jpg"),
+        )
+        io.mockk.coEvery { scannerManager.handleResult(any()) } returns ScannerResult.MultiplePagesCaptured(uris)
+
+        viewModel.handleRescanScannerResult(pageNumber = 1, data = null)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.rescanPageNumber)
+        assertEquals(0, repo.rescanCallCount)
+        val page1 = repo.getPages(documentId).getOrThrow().first { it.pageNumber == 1 }
+        assertEquals("content://page1.jpg", page1.imageUri)
+    }
+
+    @Test
+    fun `handleRescanScannerResult with single-item multiple pages still rescans`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val uris = listOf(android.net.Uri.parse("content://scanner/result.jpg"))
+        io.mockk.coEvery { scannerManager.handleResult(any()) } returns ScannerResult.MultiplePagesCaptured(uris)
+
+        viewModel.handleRescanScannerResult(pageNumber = 1, data = null)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.showRescanProgress)
+        assertNull(viewModel.uiState.value.rescanPageNumber)
+        assertEquals(1, repo.rescanCallCount)
+        val page1 = repo.getPages(documentId).getOrThrow().first { it.pageNumber == 1 }
+        assertEquals("content://scanner/result.jpg", page1.imageUri)
+    }
+
+    @Test
+    fun `handleRescanScannerResult with cancel clears rescan state`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        io.mockk.coEvery { scannerManager.handleResult(any()) } returns ScannerResult.Cancelled
+
+        viewModel.handleRescanScannerResult(pageNumber = 1, data = null)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.rescanPageNumber)
+        assertEquals(0, repo.rescanCallCount)
+    }
+
+    @Test
+    fun `beginRescan requests single page scanner and stores intent sender`() = runTest {
+        viewModel.loadDocument(documentId)
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        val sender = io.mockk.mockk<android.content.IntentSender>()
+        io.mockk.coEvery { scannerManager.getStartScanIntentSender(any(), any()) } returns sender
+
+        viewModel.beginRescan(
+            org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).get(),
+            pageNumber = 1,
+        )
+        coroutineRule.dispatcher.scheduler.advanceUntilIdle()
+
+        io.mockk.coVerify { scannerManager.getStartScanIntentSender(any(), pageLimit = 1) }
+        assertEquals(sender, viewModel.uiState.value.pendingRescanIntentSender)
+        assertEquals(1, viewModel.uiState.value.rescanPageNumber)
     }
 }

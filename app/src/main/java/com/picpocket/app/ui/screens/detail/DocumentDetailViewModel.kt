@@ -1,8 +1,10 @@
 package com.picpocket.app.ui.screens.detail
 
+import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
 import android.net.Uri
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -17,6 +19,8 @@ import com.picpocket.app.di.SearchablePdf
 import com.picpocket.app.domain.ocr.OcrManager
 import com.picpocket.app.domain.export.PageSize
 import com.picpocket.app.domain.export.PdfGenerator
+import com.picpocket.app.domain.scanner.ScannerManager
+import com.picpocket.app.domain.scanner.ScannerResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,6 +59,7 @@ data class DetailUiState(
     val renameOverwriteTargetName: String = "",
     val showRescanProgress: Boolean = false,
     val rescanPageNumber: Int? = null,
+    val pendingRescanIntentSender: IntentSender? = null,
     val ocrRunning: Boolean = false,
     val syncExcluded: Boolean = false,
 )
@@ -67,6 +72,7 @@ class DocumentDetailViewModel @Inject constructor(
     private val documentStore: DocumentStore,
     @SearchablePdf private val searchablePdfGenerator: PdfGenerator,
     private val ocrManager: OcrManager,
+    private val scannerManager: ScannerManager,
 ) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(DetailUiState())
@@ -393,6 +399,51 @@ class DocumentDetailViewModel @Inject constructor(
                     _uiState.update { it.copy(showRescanProgress = false, rescanPageNumber = null) }
                     _rescanEvents.emit(RescanEvent.ShowError(error.message ?: "Rescan failed"))
                 }
+        }
+    }
+
+    fun beginRescan(activity: Activity, pageNumber: Int) {
+        val docId = currentDocumentId
+        if (docId.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val sender = scannerManager.getStartScanIntentSender(activity, pageLimit = 1)
+                _uiState.update {
+                    it.copy(pendingRescanIntentSender = sender, rescanPageNumber = pageNumber)
+                }
+            } catch (e: Exception) {
+                _rescanEvents.emit(RescanEvent.ShowError(e.message ?: "Scanner unavailable"))
+            }
+        }
+    }
+
+    fun clearPendingRescanIntentSender() {
+        _uiState.update { it.copy(pendingRescanIntentSender = null) }
+    }
+
+    fun handleRescanScannerResult(pageNumber: Int, data: Intent?) {
+        viewModelScope.launch {
+            when (val result = scannerManager.handleResult(data)) {
+                is ScannerResult.PageCaptured -> {
+                    rescanPage(pageNumber, result.imageUri.toString())
+                }
+                is ScannerResult.MultiplePagesCaptured -> {
+                    if (result.imageUris.size == 1) {
+                        rescanPage(pageNumber, result.imageUris.first().toString())
+                    } else {
+                        _rescanEvents.emit(
+                            RescanEvent.ShowError("Rescan accepts a single image only")
+                        )
+                    }
+                }
+                is ScannerResult.Cancelled -> {
+                    _uiState.update { it.copy(rescanPageNumber = null) }
+                }
+                is ScannerResult.Error -> {
+                    _uiState.update { it.copy(rescanPageNumber = null) }
+                    _rescanEvents.emit(RescanEvent.ShowError(result.exception.message ?: "Rescan failed"))
+                }
+            }
         }
     }
 

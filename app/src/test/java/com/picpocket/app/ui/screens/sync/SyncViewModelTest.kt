@@ -6,7 +6,6 @@ import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.PassphraseStore
 import com.picpocket.app.drive.SyncState
-import com.picpocket.app.drive.sync.ConflictResolver
 import com.picpocket.app.drive.sync.DeviceRegistry
 import com.picpocket.app.drive.sync.LocalDriveIndex
 import com.picpocket.app.drive.sync.RetryHandler
@@ -43,7 +42,6 @@ class SyncViewModelTest {
     private val syncManager = mockk<SyncManager>()
     private val syncSettings = mockk<SyncSettings>(relaxed = true)
     private val localDriveIndex = mockk<LocalDriveIndex>()
-    private val conflictResolver = mockk<ConflictResolver>()
     private val deviceRegistry = mockk<DeviceRegistry>()
     private val retryHandler = mockk<RetryHandler>()
     private val encryptionManager = mockk<EncryptionManager>(relaxed = true)
@@ -58,12 +56,11 @@ class SyncViewModelTest {
         every { syncSettings.syncEnabled } returns false
         every { localDriveIndex.hasValidFolder() } returns false
         every { localDriveIndex.getRootFolderName() } returns ""
-        every { conflictResolver.getActiveConflicts() } returns emptyList()
+        every { localDriveIndex.passphraseCount } returns 0
+        every { localDriveIndex.passphraseCount = any() } returns Unit
         every { deviceRegistry.getMyDeleted() } returns emptyList()
         every { deviceRegistry.getOthersDeleted() } returns emptyList()
-        every { driveAuthManager.signInIntent } returns android.content.Intent()
         every { passphraseStore.getPassphrase() } returns null
-        coEvery { syncManager.synthesizeReEncryptPass() } returns Unit
 
         viewModel = SyncViewModel(
             app,
@@ -71,7 +68,6 @@ class SyncViewModelTest {
             syncManager,
             syncSettings,
             localDriveIndex,
-            conflictResolver,
             deviceRegistry,
             retryHandler,
             encryptionManager,
@@ -117,7 +113,6 @@ class SyncViewModelTest {
         every { localDriveIndex.hasValidFolder() } returns true
         every { localDriveIndex.getRootFolderName() } returns "Folder"
         every { syncSettings.syncEnabled } returns true
-        every { conflictResolver.getActiveConflicts() } returns listOf(mockk())
         every { deviceRegistry.getMyDeleted() } returns listOf(mockk())
         every { deviceRegistry.getOthersDeleted() } returns listOf(mockk(), mockk())
 
@@ -125,7 +120,6 @@ class SyncViewModelTest {
 
         val state = viewModel.uiState.value
         assertTrue(state.syncEnabled)
-        assertEquals(1, state.conflictCount)
         assertEquals(1, state.trashCount)
         assertEquals(2, state.removedByOthersCount)
     }
@@ -161,18 +155,8 @@ class SyncViewModelTest {
     }
 
     @Test
-    fun `handleSignInResult sets FolderPickRequired when no folder`() {
-        every { driveAuthManager.authState } returns MutableStateFlow(DriveAuthState.Connected)
-        every { localDriveIndex.hasValidFolder() } returns false
-
-        viewModel.handleSignInResult(mockk(relaxed = true))
-
-        assertEquals(SyncActionState.FolderPickRequired, viewModel.actionState.value)
-    }
-
-    @Test
-    fun `handleFolderPickerResult accepts valid Drive URI`() {
-        val uri = android.net.Uri.parse("content://com.google.android.apps.docs.storage/tree/abc")
+    fun `handleFolderPickerResult accepts valid SAF URI`() {
+        val uri = android.net.Uri.parse("content://org.nextcloud.documents/tree/abc")
         every { localDriveIndex.setRootTreeUri(any()) } returns Unit
         every { localDriveIndex.setRootFolderName(any()) } returns Unit
         every { localDriveIndex.hasValidFolder() } returns true
@@ -183,15 +167,6 @@ class SyncViewModelTest {
         viewModel.handleFolderPickerResult(uri)
 
         assertEquals(SyncActionState.Idle, viewModel.actionState.value)
-    }
-
-    @Test
-    fun `handleFolderPickerResult rejects non-Drive URI`() {
-        val uri = android.net.Uri.parse("content://other.provider/tree/abc")
-
-        viewModel.handleFolderPickerResult(uri)
-
-        assertTrue(viewModel.actionState.value is SyncActionState.Error)
     }
 
     @Test

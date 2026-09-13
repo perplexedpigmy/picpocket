@@ -1,18 +1,14 @@
 package com.picpocket.app.ui.screens.sync
 
 import android.app.Application
-import android.content.Intent
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
-import androidx.activity.result.ActivityResult
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.picpocket.app.drive.DriveAuthManager
-import com.picpocket.app.drive.DriveAuthState
 import com.picpocket.app.drive.EncryptionManager
 import com.picpocket.app.drive.PassphraseStore
 import com.picpocket.app.drive.SyncState
-import com.picpocket.app.drive.sync.ConflictResolver
 import com.picpocket.app.drive.sync.DeviceRegistry
 import com.picpocket.app.drive.sync.LocalDriveIndex
 import com.picpocket.app.drive.sync.RetryHandler
@@ -31,7 +27,6 @@ data class SyncUiState(
     val syncEnabled: Boolean = false,
     val syncState: SyncState = SyncState.Idle,
     val folderName: String = "",
-    val conflictCount: Int = 0,
     val trashCount: Int = 0,
     val removedByOthersCount: Int = 0,
     val encryptionEnabled: Boolean = false,
@@ -41,13 +36,10 @@ sealed interface ConnectionState {
     data object Loading : ConnectionState
     data object Disconnected : ConnectionState
     data object Connected : ConnectionState
-    data class DriveError(val message: String) : ConnectionState
 }
 
 sealed interface SyncActionState {
     data object Idle : SyncActionState
-    data object SignInRequired : SyncActionState
-    data object FolderPickRequired : SyncActionState
     data class Error(val message: String) : SyncActionState
 }
 
@@ -58,7 +50,6 @@ class SyncViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val syncSettings: SyncSettings,
     private val localDriveIndex: LocalDriveIndex,
-    private val conflictResolver: ConflictResolver,
     private val deviceRegistry: DeviceRegistry,
     private val retryHandler: RetryHandler,
     private val encryptionManager: EncryptionManager,
@@ -71,9 +62,6 @@ class SyncViewModel @Inject constructor(
     private val _actionState = MutableStateFlow<SyncActionState>(SyncActionState.Idle)
     val actionState: StateFlow<SyncActionState> = _actionState.asStateFlow()
 
-    val signInIntent: Intent
-        get() = driveAuthManager.signInIntent
-
     init {
         viewModelScope.launch {
             syncManager.syncState.collect { state ->
@@ -84,26 +72,20 @@ class SyncViewModel @Inject constructor(
         if (!savedPassphrase.isNullOrBlank()) {
             encryptionManager.setPassphrase(savedPassphrase)
         }
-        driveAuthManager.checkExistingAuth()
         verifyConnection()
     }
 
     fun verifyConnection() {
-        val authState = driveAuthManager.authState.value
-        if (authState !is DriveAuthState.Connected) {
-            _uiState.update { it.copy(connectionState = ConnectionState.Disconnected) }
-            return
-        }
         if (!localDriveIndex.hasValidFolder()) {
             _uiState.update { it.copy(connectionState = ConnectionState.Disconnected) }
             return
         }
+        driveAuthManager.setConnected()
         _uiState.update {
             it.copy(
                 connectionState = ConnectionState.Connected,
                 folderName = localDriveIndex.getRootFolderName(),
                 syncEnabled = syncSettings.syncEnabled,
-                conflictCount = conflictResolver.getActiveConflicts().size,
                 trashCount = deviceRegistry.getMyDeleted().size,
                 removedByOthersCount = deviceRegistry.getOthersDeleted().size,
                 encryptionEnabled = encryptionManager.isEncryptionEnabled,
@@ -113,6 +95,9 @@ class SyncViewModel @Inject constructor(
 
     fun setEncryptionPassphrase(passphrase: String) {
         if (syncManager.syncState.value is SyncState.Syncing) return
+        if (passphrase != passphraseStore.getPassphrase()) {
+            localDriveIndex.passphraseCount = localDriveIndex.passphraseCount + 1
+        }
         encryptionManager.setPassphrase(passphrase)
         passphraseStore.savePassphrase(passphrase)
         viewModelScope.launch {
@@ -123,33 +108,18 @@ class SyncViewModel @Inject constructor(
 
     fun disableEncryption() {
         if (syncManager.syncState.value is SyncState.Syncing) return
+        localDriveIndex.passphraseCount = localDriveIndex.passphraseCount + 1
         encryptionManager.clearPassphrase()
         passphraseStore.clearPassphrase()
         viewModelScope.launch {
-            syncManager.synthesizeReEncryptPass()
             syncManager.performSync()
         }
         _uiState.update { it.copy(encryptionEnabled = false) }
     }
 
-    fun handleSignInResult(result: ActivityResult) {
-        driveAuthManager.handleSignInResult(result)
-        if (driveAuthManager.authState.value is DriveAuthState.Connected) {
-            if (localDriveIndex.hasValidFolder()) {
-                _actionState.value = SyncActionState.Idle
-                verifyConnection()
-            } else {
-                _actionState.value = SyncActionState.FolderPickRequired
-            }
-        }
-    }
-
     fun handleFolderPickerResult(uri: Uri?) {
-        if (uri == null || uri.authority != "com.google.android.apps.docs.storage") {
-            _actionState.value = SyncActionState.Error(
-                if (uri == null) "Folder selection cancelled"
-                else "Please select a folder from Google Drive",
-            )
+        if (uri == null) {
+            _actionState.value = SyncActionState.Error("Folder selection cancelled")
             return
         }
         val app = getApplication<Application>()
@@ -179,7 +149,7 @@ class SyncViewModel @Inject constructor(
 
     fun disconnect() {
         localDriveIndex.clearFolder()
-        viewModelScope.launch { driveAuthManager.signOut() }
+        driveAuthManager.signOut()
         _uiState.update { it.copy(connectionState = ConnectionState.Disconnected) }
     }
 

@@ -51,6 +51,7 @@ class DocumentRepositoryImpl @Inject constructor(
 
     init {
         scope.launch { refreshDocuments() }
+        scope.launch { ocrManager.metadataChanged.collect { refreshDocuments() } }
     }
 
     private suspend fun refreshDocuments() {
@@ -65,11 +66,19 @@ class DocumentRepositoryImpl @Inject constructor(
     }
 
     override fun observeDocument(documentId: DocumentId): Flow<Document?> {
-        return _documents.asStateFlow().map { list -> list.find { it.id == documentId } }
+        return merge(
+            _documents.asStateFlow().map { Unit },
+            ocrManager.metadataChanged,
+        ).map {
+            store.readMetadata(documentId).getOrNull()?.toDomain()
+        }
     }
 
     override fun observePages(documentId: DocumentId): Flow<List<Page>> {
-        return _documents.asStateFlow().map { _ ->
+        return merge(
+            _documents.asStateFlow().map { Unit },
+            ocrManager.metadataChanged,
+        ).map {
             val stored = store.readMetadata(documentId).getOrNull() ?: return@map emptyList()
             stored.pages.mapIndexed { _, sp ->
                 Page(
@@ -122,11 +131,14 @@ class DocumentRepositoryImpl @Inject constructor(
         qualityTier: Int,
     ): Result<Unit> {
         return store.nextPageNumber(documentId).mapCatching { pageNumber ->
-            val filename = store.filenameForPage(pageNumber)
-            val pageFile = store.pageFile(documentId, filename)
             val src = java.io.File(java.net.URI(imageUri))
             val tier = QualityTier.entries.getOrNull(qualityTier) ?: QualityTier.BEST
-            PageEncoder.encodePage(src, pageFile, tier)
+            val dir = store.documentDir(documentId)
+            val tmp = java.io.File(dir, "tmp_encode_${System.nanoTime()}")
+            PageEncoder.encodePage(src, tmp, tier)
+            val filename = store.pageFilenameFor(tmp.readBytes())
+            val pageFile = store.pageFile(documentId, filename)
+            tmp.renameTo(pageFile)
             store.addPage(
                 documentId = documentId,
                 pageNumber = pageNumber,
@@ -254,16 +266,25 @@ class DocumentRepositoryImpl @Inject constructor(
         return store.readMetadata(documentId).mapCatching { doc ->
             val idx = doc.pages.indexOfFirst { it.pageNumber == pageNumber }
             if (idx < 0) throw Exception("Page $pageNumber not found in document $documentId")
-            val filename = doc.pages[idx].filename
-            val pageFile = store.pageFile(documentId, filename)
+            val oldFilename = doc.pages[idx].filename
 
             val src = File(java.net.URI(imageUri))
             val tier = QualityTier.entries.getOrNull(doc.qualityTier) ?: QualityTier.BEST
-            PageEncoder.encodePage(src, pageFile, tier)
+            val dir = store.documentDir(documentId)
+            val tmp = File(dir, "tmp_encode_${System.nanoTime()}")
+            PageEncoder.encodePage(src, tmp, tier)
+            val filename = store.pageFilenameFor(tmp.readBytes())
+            val pageFile = store.pageFile(documentId, filename)
+            tmp.renameTo(pageFile)
+
+            if (filename != oldFilename) {
+                store.pageFile(documentId, oldFilename).delete()
+            }
 
             store.replacePageImage(
                 documentId = documentId,
                 pageNumber = pageNumber,
+                filename = filename,
                 fileSizeBytes = pageFile.length(),
             ).getOrThrow()
 

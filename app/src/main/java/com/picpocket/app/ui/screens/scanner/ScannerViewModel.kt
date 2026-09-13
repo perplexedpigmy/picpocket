@@ -66,6 +66,7 @@ data class ScannerUiState(
     val exportPageSize: PageSize = PageSize.A4,
     val showOverwriteDialog: Boolean = false,
     val overwriteTargetName: String = "",
+    val scannerCancelledTick: Int = 0,
 )
 
 @HiltViewModel
@@ -162,6 +163,9 @@ class ScannerViewModel @Inject constructor(
             is ScannerResult.MultiplePagesCaptured -> { }
             is ScannerResult.Cancelled -> {
                 Log.d("ScannerViewModel", "scanner cancelled")
+                if (_uiState.value.capturedPages.isEmpty()) {
+                    _uiState.update { it.copy(scannerCancelledTick = it.scannerCancelledTick + 1) }
+                }
             }
             is ScannerResult.Error -> {
                 Log.e("ScannerViewModel", "scanner error", result.exception)

@@ -1,11 +1,12 @@
 package com.picpocket.app.ui.screens.detail
 
+import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.core.content.FileProvider
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
@@ -106,14 +107,21 @@ fun DocumentDetailScreen(
         }
     }
 
-    var rescanState by remember { mutableStateOf<Pair<Int, Uri>?>(null) }
-    val takePictureLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture(),
-    ) { success ->
-        val (pageNumber, imageUri) = rescanState ?: return@rememberLauncherForActivityResult
-        rescanState = null
-        if (success) {
-            viewModel.rescanPage(pageNumber, imageUri.toString())
+    val activity = contextForExport as? Activity
+    val scannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        val pageNumber = state.rescanPageNumber
+        viewModel.clearPendingRescanIntentSender()
+        if (pageNumber != null) {
+            viewModel.handleRescanScannerResult(pageNumber, result.data)
+        }
+    }
+
+    LaunchedEffect(state.pendingRescanIntentSender) {
+        state.pendingRescanIntentSender?.let { sender ->
+            val request = IntentSenderRequest.Builder(sender).build()
+            scannerLauncher.launch(request)
         }
     }
 
@@ -371,15 +379,7 @@ fun DocumentDetailScreen(
                                     onDelete = { viewModel.toggleMarkForDeletion(page.filename) },
                                     onView = { onPageView(documentId, index) },
                                     onRescan = {
-                                        val tempFile = java.io.File(contextForExport.cacheDir, "rescan_temp.jpg")
-                                        tempFile.parentFile?.mkdirs()
-                                        val uri = FileProvider.getUriForFile(
-                                            contextForExport,
-                                            "${contextForExport.packageName}.fileprovider",
-                                            tempFile,
-                                        )
-                                        rescanState = index + 1 to uri
-                                        takePictureLauncher.launch(uri)
+                                        activity?.let { viewModel.beginRescan(it, index + 1) }
                                     },
                                     modifier = itemModifier,
                                 )

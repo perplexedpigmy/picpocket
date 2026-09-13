@@ -13,7 +13,17 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val LOCK_FILE = "sync-lock.json"
+// The lock is a DIRECTORY, not a file: file creation over the laggy SAF bridge
+// is last-writer-wins (both stale devices can "create" the same name and the
+// second write silently replaces the first), so a file lock can never prove
+// exclusivity. Directory creation is a WebDAV MKCOL, which the SERVER resolves
+// atomically: the second concurrent create for the same name fails (405), and
+// the Nextcloud client surfaces that failure as a null createDirectory — even
+// when its own cached listing was stale and never showed the existing
+// directory. A non-null createDirectory therefore proves we are the sole
+// creator, and the lock stays ours until we delete it. No re-checking needed.
+private const val LOCK_DIR = ".sync-lock"
+private const val TOKEN_FILE = "lock.json"
 private const val HEARTBEAT_INTERVAL_MS = 30_000L
 private const val STALE_TIMEOUT_MS = 300_000L
 
@@ -45,17 +55,24 @@ class SyncMutex @Inject constructor(
         if (deviceId.isBlank()) return@withContext false
 
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext false
-        val existing = root.findFile(LOCK_FILE)
+        refreshRoot(root)
+        val existing = root.findFile(LOCK_DIR)
 
         if (existing != null) {
             val data = readLockData(existing)
             if (data != null) {
                 val age = System.currentTimeMillis() - data.heartbeat
-                if (age < STALE_TIMEOUT_MS) {
+                // A fresh lock held by ANOTHER device means that device is
+                // syncing — back off. A fresh lock held by US is an orphan
+                // from a crashed previous sync (syncs here are serialized by
+                // the isSyncing guard), so reclaim it by deleting and
+                // re-creating below instead of waiting out the full stale
+                // timeout.
+                if (age < STALE_TIMEOUT_MS && data.lockedBy != deviceId) {
                     return@withContext false
                 }
             }
-            existing.delete()
+            deleteLockDir(existing)
         }
 
         claimToken = UUID.randomUUID().toString()
@@ -66,23 +83,38 @@ class SyncMutex @Inject constructor(
             acquiredAt = now,
             heartbeat = now,
         )
-        val file = root.createFile("application/json", LOCK_FILE) ?: return@withContext false
+        // The atomic step: only one device can own this directory name.
+        // Any other device's createDirectory (even from a stale listing)
+        // fails on the server and comes back null, so a non-null result
+        // means we won the lock outright.
+        val dir = root.createDirectory(LOCK_DIR) ?: return@withContext false
+
+        val file = dir.createFile("application/json", TOKEN_FILE) ?: return@withContext false
         context.contentResolver.openOutputStream(file.uri)?.use {
             it.write(json.encodeToString(lock).toByteArray(Charsets.UTF_8))
         } ?: return@withContext false
 
-        val verification = readLockData(root.findFile(LOCK_FILE))
+        // We are the only writer inside this directory, so a read-back that
+        // shows our token is guaranteed to keep showing it until we release.
+        val verification = readLockData(dir)
         verification != null && verification.lockedBy == deviceId && verification.claimToken == claimToken
+    }
+
+    private fun refreshRoot(root: DocumentFile) {
+        try {
+            context.contentResolver.refresh(root.uri, null, null)
+        } catch (_: Throwable) {}
     }
 
     suspend fun heartbeat() {
         if (treeUri.isBlank() || deviceId.isBlank() || claimToken.isBlank()) return
         withContext(Dispatchers.IO) {
             val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext
-            val file = root.findFile(LOCK_FILE) ?: return@withContext
-            val data = readLockData(file) ?: return@withContext
+            val dir = root.findFile(LOCK_DIR) ?: return@withContext
+            val data = readLockData(dir) ?: return@withContext
             if (data.lockedBy != deviceId || data.claimToken != claimToken) return@withContext
             val updated = data.copy(heartbeat = System.currentTimeMillis())
+            val file = dir.findFile(TOKEN_FILE) ?: return@withContext
             context.contentResolver.openOutputStream(file.uri)?.use {
                 it.write(json.encodeToString(updated).toByteArray(Charsets.UTF_8))
             }
@@ -93,21 +125,37 @@ class SyncMutex @Inject constructor(
         if (treeUri.isBlank()) return
         withContext(Dispatchers.IO) {
             val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext
-            val file = root.findFile(LOCK_FILE) ?: return@withContext
-            val data = readLockData(file)
+            // The listing may still show the pre-lock state; refresh before
+            // looking the lock up so we actually delete the directory we made.
+            refreshRoot(root)
+            val dir = root.findFile(LOCK_DIR) ?: return@withContext
+            val data = readLockData(dir)
             if (data != null && data.lockedBy == deviceId && data.claimToken == claimToken) {
-                file.delete()
+                deleteLockDir(dir)
             }
         }
     }
 
-    private fun readLockData(file: DocumentFile?): LockData? {
-        if (file == null || !file.exists()) return null
+    private fun readLockData(dir: DocumentFile): LockData? {
+        val file = dir.findFile(TOKEN_FILE) ?: return null
+        if (!file.exists()) return null
         val bytes = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() } ?: return null
         return try {
             json.decodeFromString(String(bytes, Charsets.UTF_8))
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun deleteLockDir(dir: DocumentFile) {
+        val token = dir.findFile(TOKEN_FILE)
+        if (token != null) {
+            try {
+                token.delete()
+            } catch (_: Exception) {}
+        }
+        try {
+            dir.delete()
+        } catch (_: Exception) {}
     }
 }

@@ -8,13 +8,19 @@ import com.picpocket.app.debug.Category
 import com.picpocket.app.debug.Tracing
 import androidx.documentfile.provider.DocumentFile
 import com.picpocket.app.data.store.DocumentStore
+import com.picpocket.app.data.store.MetadataNaming
 import com.picpocket.app.data.store.StoredDocument
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.delay
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
+
+class RegistryWriteException(message: String) : Exception(message)
+
+class CorruptRegistryException(message: String) : Exception(message)
 
 data class OrphanedDocument(
     val docId: String,
@@ -33,7 +39,7 @@ class DeviceRegistry @Inject constructor(
     private val localDriveIndex: LocalDriveIndex,
     @ApplicationContext private val context: Context,
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val orphans = mutableListOf<OrphanedDocument>()
     var remoteEncrypted: Boolean = false
         private set
@@ -94,8 +100,14 @@ class DeviceRegistry @Inject constructor(
             driveFileManager.deleteFileByName(treeUri, docId, ".deleted")
         }
         val doc = documentStore.readMetadata(docId).getOrNull() ?: return
-        val updated = doc.copy(syncVersion = 0, syncTimestamp = System.currentTimeMillis())
-        documentStore.writeMetadata(docId, updated)
+        val remoteVersion = if (treeUri.isNotBlank()) {
+            driveFileManager.listFileNames(treeUri, docId)
+                .mapNotNull { MetadataNaming.parse(it)?.first }
+                .maxOrNull() ?: 0
+        } else 0
+        val localVersion = documentStore.metadataVersion(docId)
+        val passphrase = documentStore.metadataPassphrase(docId)
+        documentStore.writeMetadataAt(docId, doc, maxOf(localVersion, remoteVersion) + 1, passphrase)
         val orphan = orphans.find { it.docId == docId }
         orphan?.acknowledged = true
     }
@@ -162,21 +174,21 @@ class DeviceRegistry @Inject constructor(
             },
         )
         val data = json.encodeToString(registry).toByteArray(Charsets.UTF_8)
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
-        if (root == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryToDrive: root null"); return }
-        try {
-            context.contentResolver.refresh(root.uri, null, null)
-        } catch (_: Exception) { }
-        for (child in root.listFiles()) {
-            if (child.name == REGISTRY_FILE) {
-                child.delete()
+        var outcome: WriteOutcome = WriteOutcome.Failed("not attempted")
+        for (attempt in 1..REGISTRY_WRITE_ATTEMPTS) {
+            outcome = driveFileManager.writeRootFile(treeUri, REGISTRY_FILE, data)
+            if (outcome is WriteOutcome.Verified) {
+                Tracing.d(Category.STORE_STATE, TAG, "syncRegistryToDrive: $REGISTRY_FILE verified after $attempt attempt(s)")
+                return
             }
+            val reason = (outcome as? WriteOutcome.Failed)?.reason ?: outcome.toString()
+            Tracing.w(Category.STORE_STATE, TAG, "syncRegistryToDrive: attempt $attempt failed to verify $REGISTRY_FILE ($reason)")
+            if (attempt < REGISTRY_WRITE_ATTEMPTS) delay(REGISTRY_WRITE_RETRY_DELAY_MS)
         }
-        val created = root.createFile("application/json", REGISTRY_FILE)
-        Tracing.d(Category.STORE_STATE, TAG, "syncRegistryToDrive: created=$created")
-        if (created != null) {
-            context.contentResolver.openOutputStream(created.uri)?.use { it.write(data) }
-        }
+        throw RegistryWriteException(
+            "Failed to write $REGISTRY_FILE to drive after $REGISTRY_WRITE_ATTEMPTS attempts: " +
+                ((outcome as? WriteOutcome.Failed)?.reason ?: outcome.toString()),
+        )
     }
 
     suspend fun syncRegistryFromDrive() {
@@ -184,27 +196,44 @@ class DeviceRegistry @Inject constructor(
         if (treeUri.isBlank()) return
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
         if (root == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: root null"); return }
-        try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Exception) { }
-        val file = root.listFiles().find { it.name == REGISTRY_FILE }
-        Tracing.d(Category.STORE_STATE, TAG, "syncRegistryFromDrive: file=$file")
-        if (file == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: $REGISTRY_FILE not found"); return }
-        val bytes = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() } ?: return
-        val remote = try {
-            json.decodeFromString<SharedDeviceRegistry>(String(bytes, Charsets.UTF_8))
-        } catch (_: Exception) { return }
-        remoteEncrypted = remote.encrypted
-        val localDeviceId = localDriveIndex.getLocalDeviceId()
-        for (device in remote.devices) {
-            if (device.id == localDeviceId) continue
-            val existing = localDriveIndex.getDevices()[device.id]
-            if (existing == null) {
-                localDriveIndex.setDevice(
-                    device.id,
-                    DeviceInfo(name = device.name, firstSeen = device.lastSeen, lastSeen = device.lastSeen),
-                )
+
+        // The Nextcloud bridge serves file contents from a cache that lags
+        // the server by one refresh cycle, so a just-listed devices.json can
+        // transiently read back empty. Retry before treating it as corrupt;
+        // only a persistent decode failure halts the sync.
+        for (attempt in 1..REGISTRY_READ_ATTEMPTS) {
+            try { context.contentResolver.refresh(root.uri, null, null) } catch (_: Throwable) { }
+            val file = root.listFiles().find { it.name == REGISTRY_FILE }
+            if (file == null) { Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: $REGISTRY_FILE not found"); return }
+            val bytes = context.contentResolver.openInputStream(file.uri)?.use { it.readBytes() }
+            if (bytes == null || bytes.isEmpty()) {
+                Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: attempt $attempt read ${bytes?.size ?: 0} bytes, retrying")
+                if (attempt < REGISTRY_READ_ATTEMPTS) { delay(REGISTRY_READ_RETRY_DELAY_MS); continue }
+                break
             }
+            val remote = try {
+                json.decodeFromString<SharedDeviceRegistry>(String(bytes, Charsets.UTF_8))
+            } catch (e: Exception) {
+                Tracing.w(Category.STORE_STATE, TAG, "syncRegistryFromDrive: attempt $attempt decode failed (${e.message})")
+                if (attempt < REGISTRY_READ_ATTEMPTS) { delay(REGISTRY_READ_RETRY_DELAY_MS); continue }
+                throw CorruptRegistryException("$REGISTRY_FILE on drive is corrupt (${e.message}); sync halted")
+            }
+            remoteEncrypted = remote.encrypted
+            val localDeviceId = localDriveIndex.getLocalDeviceId()
+            for (device in remote.devices) {
+                if (device.id == localDeviceId) continue
+                val existing = localDriveIndex.getDevices()[device.id]
+                if (existing == null) {
+                    localDriveIndex.setDevice(
+                        device.id,
+                        DeviceInfo(name = device.name, firstSeen = device.lastSeen, lastSeen = device.lastSeen),
+                    )
+                }
+            }
+            Tracing.d(Category.STORE_STATE, TAG, "syncRegistryFromDrive: imported ${remote.devices.size} device(s)")
+            return
         }
-        Tracing.d(Category.STORE_STATE, TAG, "syncRegistryFromDrive: imported ${remote.devices.size} device(s)")
+        throw CorruptRegistryException("$REGISTRY_FILE exists on drive but could not be read; sync halted")
     }
 
     suspend fun cleanDrive() {
@@ -239,6 +268,10 @@ class DeviceRegistry @Inject constructor(
     companion object {
         private const val TAG = "DeviceRegistry"
         private const val REGISTRY_FILE = "devices.json"
+        private const val REGISTRY_WRITE_ATTEMPTS = 3
+        private const val REGISTRY_WRITE_RETRY_DELAY_MS = 2_000L
+        private const val REGISTRY_READ_ATTEMPTS = 3
+        private const val REGISTRY_READ_RETRY_DELAY_MS = 2_000L
     }
 }
 
