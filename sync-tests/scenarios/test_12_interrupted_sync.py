@@ -89,11 +89,27 @@ class TestInterruptedSync:
         assert_drive_verified(oracle, drive_finality=True, drive_timeout=180)
 
         emu_a._go_home(timeout=10.0)
-        assert emu_a.assert_doc_exists("test-interrupt"), (
-            "Doc not visible after interrupted-sync recovery"
-        )
+        # Robust local recovery check: read the device's own metadata (the doc
+        # must be present locally with all 100 pages) and confirm the page
+        # files it references actually exist on disk. Page filenames are
+        # SHA-256 content-addressed, not sequential "page_NNN.jpg", so derive
+        # them from the metadata rather than guessing names.
         doc_prefix = oracle.wait_for_doc_folder()
         assert doc_prefix, "Interrupted doc did not land on the Drive"
+        meta = emu_a.read_device_metadata(doc_prefix)
+        assert meta, f"Doc {doc_prefix} missing from local device storage after recovery"
+        pages = meta.get("pages") or []
+        assert len(pages) == 100, (
+            f"Expected 100 local pages after recovery, found {len(pages)}"
+        )
+        page_filenames = [p.get("filename") for p in pages if p.get("filename")]
+        assert page_filenames, f"Local metadata for {doc_prefix} lists no page files"
+        for filename in page_filenames[:3]:
+            assert emu_a.page_file_exists(doc_prefix, filename, timeout=30.0), (
+                f"Page file {filename} missing locally after recovery"
+            )
+        logger.info("Local recovery verified: %d pages on device for %s", len(page_filenames), doc_prefix)
+        # Server-side verification (already done by assert_drive_verified)
         server_files = oracle.list_folder_with_lengths(f"/PicPocketTest/{doc_prefix}")
         assert server_files, "Doc folder empty on server after recovery"
         assert all(v > 0 for v in server_files.values()), (

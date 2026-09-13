@@ -71,12 +71,13 @@ class TestEncryption:
         sync_with_false_mutex_retry(emu_b, watcher_b, trigger=False, timeout=150.0)
 
         # B's first post-passphrase sync can read a stale listing and skip the
-        # doc ("undecodable metadata"); re-sync until it actually lands.
+        # doc ("undecodable metadata"); re-sync until it actually lands in the
+        # local store (ground truth; the home UI can lag a recomposition).
         emu_b._go_home(timeout=10.0)
         assert sync_until(
             emu_b, watcher_b,
-            check=lambda: emu_b.assert_doc_exists("test-enc"),
-        ), "Doc not visible on B after passphrase"
+            check=lambda: emu_b.find_local_doc("test-enc") is not None,
+        ), "Doc not present on B after passphrase"
 
         # A rotates the passphrase: the re-encrypt sync writes generation 2 to
         # the Drive, which stales B out (B only knows generation 1).
@@ -102,8 +103,8 @@ class TestEncryption:
         emu_b._go_home(timeout=10.0)
         assert sync_until(
             emu_b, watcher_b,
-            check=lambda: emu_b.assert_doc_exists("test-enc"),
-        ), "Doc not visible on B after P2"
+            check=lambda: emu_b.find_local_doc("test-enc") is not None,
+        ), "Doc not present on B after P2"
 
     @staticmethod
     def _enable_encryption(emu, passphrase: str):

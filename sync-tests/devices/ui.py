@@ -303,6 +303,32 @@ class UiDevice:
             )
             return None
 
+    def list_local_docs(self) -> list[tuple[str, str]]:
+        """Return [(name, doc_id)] for every document in local storage.
+
+        Doc ids are the UUID directory names under files/documents; each
+        newest metadata file carries the doc's `name`. Confirms the doc
+        really landed in the store, independent of what the home UI renders.
+        """
+        out = self.adb.shell(
+            f"run-as {APP_PACKAGE} ls files/documents/ 2>/dev/null || true",
+            timeout=5,
+        )
+        result = []
+        for did in (out or "").split():
+            meta = self.read_device_metadata(did)
+            if meta and meta.get("name"):
+                result.append((meta["name"], did))
+        return result
+
+    def find_local_doc(self, name: str) -> Optional[str]:
+        """Return the local doc id whose stored name matches, or None."""
+        for stored_name, doc_id in self.list_local_docs():
+            if stored_name == name:
+                return doc_id
+        logger.warning("Local doc '%s' not found on %s", name, self.serial)
+        return None
+
     def _go_home(self, timeout: float = 10.0):
         deadline = time.time() + timeout
         while time.time() < deadline:
