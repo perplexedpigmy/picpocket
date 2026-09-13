@@ -1,11 +1,24 @@
 # Justfile for PicPocket Android Project
-# Build, test, and drive the sync layers:
-#   infra-test            — rclone mount ↔ Drive, WebDAV ↔ rclone (infra_tests/)
-#   saf-test              — focused SAF → WebDAV → rclone → Drive (test_saf_to_drive.py)
-#   scenario-single       — 13 single-device scenarios, 2-way parallel (run_e2e.sh parallel)
-#   scenario-two-device   — 5 two-device scenarios, serial (test_b, test_04, test_05, test_09, test_10)
-#   scenario-test         — full suite: scenario-single then scenario-two-device
-#   chain-test            — infra-test then saf-test in sequence
+# Build, test, and drive the sync layers.
+#
+# All test tiers are orchestrated by the unified runner (scripts/test_runner.py):
+#   just test                — run every tier in dependency order (gated)
+#   just test-failed         — rerun only what failed in the last run
+#   just test-name <pat>     — run only tests matching <pat>
+#   just test-group <x>      — run only a group: unit|instrumented|infra|saf|scenario
+#   just test-v              — same as `just test` but streams raw output
+#   just test-dry-run        — show the plan + ETA without running anything
+#
+# Tier dependency rules (enforced by the runner):
+#   unit → (nothing)          infra → (nothing)
+#   instrumented → infra      (SAFWriteProbeTest needs the stack + SAF grant)
+#   saf → infra               scenario → saf + infra
+# A tier is skipped when a dependency failed (recorded for --group, fresh for --all).
+#
+# SAFWriteProbeTest is a host-driven diagnostic probe (not a regression test):
+# its @Test methods log timestamped traces that sync-tests/_probe_*.py correlate
+# against server-side WebDAV ground truth. It is excluded from the instrumented
+# tier sweep and run explicitly by the probe scripts with the SAF grant set up.
 
 rclone_mount := "./tmp/gdrive-test"
 compose_file := "./sync-tests/docker-compose.test.yml"
@@ -27,19 +40,21 @@ build:
     ./gradlew assembleDebug
     @echo "Build completed!"
 
-# Run the JVM unit tests
-unit-test:
+# Run the JVM unit tests (Robolectric) via the unified runner.
+unit-test *args:
     @echo "Running unit tests..."
-    ./gradlew testDebugUnitTest
+    python scripts/test_runner.py --group unit --args "{{args}}"
     @echo "Tests completed!"
 
-# Run instrumented Android tests on one emulator (testPixel7, emulator-5554).
-# Always reboots from the sync_test_ready snapshot for a known state, then
-# runs connectedDebugAndroidTest only on that device. Extra args (e.g.
-# -Pandroid.testInstrumentationRunnerArguments.class=...) are passed to gradle.
+# Run instrumented Android tests (Compose, androidTest) on one emulator
+# (testPixel7, emulator-5554). Always reboots from the sync_test_ready snapshot
+# for a known state; runs connectedDebugAndroidTest only on that device.
+# Depends on infra: SAFWriteProbeTest needs the Nextcloud stack + SAF grant
+# (skipped when infra is recorded-failed; --force overrides).
+# Extra gradle args (e.g. -Pandroid.testInstrumentationRunnerArguments.class=...)
+# are forwarded via --args.
 android-test *args:
-    EMULATOR_SERIAL=emulator-5554 python sync-tests/scripts/ensure_emulator.py
-    ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest {{args}}
+    python scripts/test_runner.py --group instrumented --args "{{args}}"
 
 # Build and install the debug APK on the connected device
 install: build
@@ -115,23 +130,66 @@ sync-clean:
 clear-rclone-cache:
     rm -rf tmp/rclone-vfs-cache
 
+# ---------------------------------------------------------------------------
+# Unified test runner — the single entry point for all test tiers.
+# ---------------------------------------------------------------------------
+
+# Run every test tier in dependency order: unit → infra → instrumented → saf →
+# scenario. Tiers whose dependency failed in the same run are skipped (e.g.
+# scenario is not executed when saf or infra failed). Extra args are forwarded
+# to the runner (e.g. --name <pattern>). Use -v for streaming output.
+test *args:
+    python scripts/test_runner.py {{args}}
+
+# Run every tier (equivalent to `just test` with no args).
+test-all:
+    python scripts/test_runner.py
+
+# Rerun only the tests that failed in the last recorded run. Gradle tiers are
+# filtered by failed class (from JUnit XML), pytest tiers use --lf. The same
+# dependency gating applies (a tier whose dependency failed is skipped).
+test-failed *args:
+    python scripts/test_runner.py --failed {{args}}
+
+# Run only the tests whose name contains <pattern> (e.g. "test_09").
+test-name +pattern:
+    python scripts/test_runner.py --name {{pattern}}
+
+# Run only the given group(s), comma-separated:
+#   unit | instrumented | infra | saf | scenario
+# Dependencies are consulted in the results DB: a recorded FAILED dependency
+# skips the tier (override with --force); no record warns and proceeds.
+test-group +groups:
+    python scripts/test_runner.py --group {{groups}}
+
+# Stream all subprocess output live (detailed run), otherwise bars + summary.
+test-v *args:
+    python scripts/test_runner.py -v {{args}}
+
+# Show the tier plan, dependency edges, estimated durations and overall ETA
+# without executing anything.
+test-dry-run:
+    python scripts/test_runner.py --dry-run
+
+# ---------------------------------------------------------------------------
+# Lower-level recipes (also routed through the unified runner).
+# ---------------------------------------------------------------------------
+
 # STORAGE LAYER: rclone mount ↔ Drive and WebDAV ↔ rclone ↔ Drive.
 # Runs sync-tests/infra_tests/ (fuse mount, webdav, cross-layer, edge cases)
 # against the Nextcloud + rclone stack only — no emulator, no app.
 # Used to gain confidence in the storage primitives.
-# Extra args (e.g. -k <expr>, --maxfail=1) are passed to pytest.
+# Extra args (e.g. -k <expr>, --maxfail=1) are forwarded to pytest via --args.
 infra-test *args:
-    cd sync-tests && .venv/bin/pytest infra_tests/ -v --tb=short --durations=5 {{args}}
+    python scripts/test_runner.py --group infra --args "{{args}}"
 
 # FOCUSED SAF CHAIN: scenarios/test_saf_to_drive.py (4 tests: folder select,
 # small/large file, reinstall). A fast single-device SUBSET of scenario-single
 # (which already includes these tests) kept for quick iteration on the
 # SAF -> WebDAV -> rclone -> Drive chain. ~10 min.
-# Extra args (e.g. --no-reset, --maxfail=1) are passed to pytest.
+# Extra args (e.g. --no-reset, --maxfail=1) are forwarded to pytest via --args.
 saf-test *args:
-    ./gradlew assembleDebug
-    python sync-tests/scripts/ensure_emulator.py
-    cd sync-tests && systemd-inhibit --what=sleep -- .venv/bin/pytest scenarios/test_saf_to_drive.py -v {{args}}
+    python scripts/test_runner.py --group saf --args "{{args}}"
 
 # SINGLE-DEVICE sync scenarios, 2-way parallel.
 # Builds the APK, boots BOTH emulators, and runs the 13 single-device tests
@@ -168,27 +226,17 @@ scenario-two-device *args: clear-rclone-cache
         scenarios/test_10_contention.py \
         {{args}}
 
-# FULL SYNC SUITE: scenario-single (13 single-device tests in parallel) then
+# FULL SYNC SUITE via the unified runner: the scenario tier runs
+# scenario-single (13 single-device tests, 2 parallel workers) then
 # scenario-two-device (5 two-device tests serial), in that order — the
 # two-device stage needs both emulators, which the parallel workers occupy.
-# Non-overlapping coverage of all 18 scenarios. Always blocks until the whole
-# suite is done.
-scenario-test *args: clear-rclone-cache
-    ./gradlew assembleDebug
-    python sync-tests/scripts/ensure_emulator.py
-    bash scripts/run_e2e.sh parallel --wait {{args}}
-    bash scripts/run_e2e.sh serial \
-        scenarios/test_01_happy_path.py::TestHappyPath::test_b_downloads_from_other_device \
-        scenarios/test_04_encryption.py \
-        scenarios/test_05_orphan.py \
-        scenarios/test_09_passphrase_change_reencrypt.py \
-        scenarios/test_10_contention.py \
-        --wait {{args}}
+# Non-overlapping coverage of all 18 scenarios. Gated on saf + infra passing.
+# Extra pytest args are forwarded via --args.
+scenario-test *args:
+    python scripts/test_runner.py --group scenario --args "{{args}}"
 
-# Run both primitive layers in sequence: infra-test first (stack only), then
-# saf-test (emulator + app). A confidence pass over the storage chain.
-# Serialized explicitly in the body: just runs recipe dependencies in
-# parallel, so a dependency list here would launch both at once.
+# Run both primitive layers in sequence via the runner: infra first (stack
+# only), then saf (emulator + app). A confidence pass over the storage chain;
+# saf is skipped if infra failed in the same run.
 chain-test:
-    @just infra-test
-    @just saf-test
+    python scripts/test_runner.py --group infra,saf

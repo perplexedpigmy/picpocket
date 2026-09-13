@@ -46,6 +46,10 @@ def _dump_failure_diagnostics() -> None:
                 "SyncManager", "DownloadEngine", "DriveFileManager", "UploadEngine",
                 "DeviceRegistry", "SAFProbe", "DocumentsStorageProvider",
                 "ReadFolderRemoteOperation", "OwnCloudClient", "SynchronizeFileOperation",
+                # import + store tags: an offline-sync failure often boils down
+                # to whether the imported doc actually landed in the local store
+                "HomeViewModel", "DocumentRepository", "DocumentStore",
+                "PdfPageImporter", "ScannerViewModel", "importPdf",
             ))
         ]
         logger.info("===== %s logcat (%d relevant lines) =====", serial, len(relevant))

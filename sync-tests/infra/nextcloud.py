@@ -249,6 +249,14 @@ def _ensure_rclone_mount_locked() -> None:
                 "--cache-dir", str(VFS_CACHE_DIR),
                 "--dir-cache-time", f"{RCLONE_DIR_CACHE_TIME}s",
                 "--poll-interval", "0",
+                # Worker-root folders (NEXTCLOUD_SUBDIR=w1/w2) are mirrored
+                # through the FUSE mount; after a hard kill or crash the plain
+                # directories remain in the mount point and rclone refuses to
+                # mount over a non-empty dir ("is not empty, use
+                # --allow-non-empty"), failing the daemon child with a
+                # misleading "Daemon timed out" from the parent. Mounting over
+                # them is safe: the FUSE fs shadows the stale entries.
+                "--allow-non-empty",
             ],
             check=False,
         )

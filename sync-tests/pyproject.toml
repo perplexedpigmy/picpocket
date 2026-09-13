@@ -12,6 +12,7 @@ dependencies = [
     "uiautomator2>=2.16",
     "fpdf2>=2.8",
     "requests>=2.31",
+    "rich>=13.0",
 ]
 
 [tool.pytest.ini_options]
